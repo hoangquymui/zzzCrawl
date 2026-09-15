@@ -1,7 +1,10 @@
 import { io, Socket } from 'socket.io-client';
 
-// Khởi tạo socket.io client. Khi chạy Vite dev, proxy sẽ chuyển tiếp /socket.io sang cổng 3000
-export const socket: Socket = io({
+const backendUrl = import.meta.env.VITE_BACKEND_URL || undefined;
+
+// Khởi tạo socket.io client. Nếu có VITE_BACKEND_URL (deploy Vercel + Cloudflare Tunnel), sẽ kết nối trực tiếp đến backend URL.
+export const socket: Socket = io(backendUrl, {
   autoConnect: true,
   transports: ['websocket', 'polling'],
 });
+
