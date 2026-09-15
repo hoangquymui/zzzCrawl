@@ -17,11 +17,11 @@ export default defineConfig({
         configure: (proxy) => {
           proxy.on('error', (err) => {
             // Tránh văng AggregateError khi backend server chưa bật hoặc đang khởi động lại
-            if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
+            if ((err as { code?: string })?.code === 'ECONNREFUSED') {
               // Bỏ qua lỗi kết nối tạm thời khi backend chưa chạy
               return;
             }
-            console.warn('[Proxy WS Error]:', err.message);
+            console.warn('[Proxy WS Error]:', (err as Error)?.message || err);
           });
         },
       },
