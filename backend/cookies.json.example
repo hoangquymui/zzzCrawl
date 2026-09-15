@@ -1,0 +1,18 @@
+﻿[
+  {
+    name: c_user,
+    value: 1000123456789,
+    domain: .facebook.com,
+    path: /,
+    secure: true,
+    httpOnly: false
+  },
+  {
+    name: xs,
+    value: sample_session_secret,
+    domain: .facebook.com,
+    path: /,
+    secure: true,
+    httpOnly: true
+  }
+]

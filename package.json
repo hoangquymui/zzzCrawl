@@ -1,0 +1,14 @@
+{
+  "name": "zzzcrawl-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Video Tracker Realtime - Fullstack App with React, Vite, Tailwind, TypeScript & NestJS",
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build:backend",
+    "build": "npm run build:frontend && npm run build:backend",
+    "start": "npm --prefix backend start"
+  }
+}
