@@ -11,6 +11,7 @@ export interface ScannedPostItem {
   author: string;
   postType: string;
   date: string;
+  timestamp?: number;
   taggedName: string;
   textPreview: string;
   viewsCount: string;
@@ -26,6 +27,8 @@ export interface ProfileScanConfig {
   maxScrolls: number;
   cookieCount: number;
   rawCookie: string;
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface ProfileScannerProgress {

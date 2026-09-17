@@ -183,7 +183,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
   // Fast presets
   const handlePreset = (
-    type: "today" | "7days" | "30days" | "thisMonth" | "all",
+    type: "today" | "7days" | "30days" | "thisMonth" | "1year" | "all",
   ) => {
     const today = new Date();
     const todayStr = toDateString(today);
@@ -197,6 +197,10 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
     } else if (type === "30days") {
       const past = new Date(today);
       past.setDate(past.getDate() - 29);
+      onChange({ startDate: toDateString(past), endDate: todayStr });
+    } else if (type === "1year") {
+      const past = new Date(today);
+      past.setFullYear(past.getFullYear() - 1);
       onChange({ startDate: toDateString(past), endDate: todayStr });
     } else if (type === "thisMonth") {
       const first = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -280,39 +284,46 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
       {/* 2. The Floating Calendar Popover (The floating month is the calendar popover) */}
       {isOpen && (
         <div
-          className="absolute left-0 mt-1.5 z-50 w-[360px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/90 rounded-2xl shadow-xl p-3.5 animate-in fade-in zoom-in-95 duration-150"
+          className="absolute left-0 mt-1.5 z-50 w-[380px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/90 rounded-2xl shadow-xl p-3.5 animate-in fade-in zoom-in-95 duration-150"
           role="dialog"
           aria-label="Bộ chọn khoảng ngày"
         >
-          {/* Quick Presets Bar - 4 nút chia đều 4 cột trên cùng 1 hàng */}
-          <div className="grid grid-cols-4 gap-1 pb-2.5 border-b border-slate-200 dark:border-slate-800 text-xs">
+          {/* Quick Presets Bar - 5 nút chia đều 5 cột trên cùng 1 hàng */}
+          <div className="grid grid-cols-5 gap-1 pb-2.5 border-b border-slate-200 dark:border-slate-800 text-[11px]">
             <button
               type="button"
               onClick={() => handlePreset("today")}
-              className="py-1.5 px-1 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
+              className="py-1.5 px-0.5 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
             >
               Hôm nay
             </button>
             <button
               type="button"
               onClick={() => handlePreset("7days")}
-              className="py-1.5 px-1 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
+              className="py-1.5 px-0.5 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
             >
-              7 ngày qua
+              7 ngày
             </button>
             <button
               type="button"
               onClick={() => handlePreset("30days")}
-              className="py-1.5 px-1 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
+              className="py-1.5 px-0.5 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
             >
-              30 ngày qua
+              30 ngày
             </button>
             <button
               type="button"
-              onClick={() => handlePreset("thisMonth")}
-              className="py-1.5 px-1 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
+              onClick={() => handlePreset("1year")}
+              className="py-1.5 px-0.5 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
             >
-              Tháng này
+              1 năm qua
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePreset("all")}
+              className="py-1.5 px-0.5 rounded-lg text-center bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white font-medium transition cursor-pointer whitespace-nowrap"
+            >
+              Tất cả
             </button>
           </div>
 

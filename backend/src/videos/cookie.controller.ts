@@ -40,4 +40,10 @@ export class CookieController {
   public clearCookiePost() {
     return this.cookieService.clearCookie();
   }
+
+  @Post('check')
+  @HttpCode(HttpStatus.OK)
+  public async checkCookie() {
+    return await this.cookieService.checkCookieValidity();
+  }
 }

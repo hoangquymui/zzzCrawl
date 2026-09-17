@@ -29,6 +29,8 @@ export const profileScannerApi = {
     profileUrls: string[];
     targetTag: string;
     maxScrolls: number;
+    startDate?: string;
+    endDate?: string;
   }): Promise<{ success: boolean; message: string }> {
     const res = await fetch(`${API_BASE}/scan`, {
       method: 'POST',

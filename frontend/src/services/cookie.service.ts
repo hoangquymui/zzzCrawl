@@ -1,3 +1,12 @@
+export interface CookieCheckResult {
+  isValid: boolean;
+  status: 'VALID' | 'EXPIRED' | 'MISSING' | 'ERROR';
+  message: string;
+  cUser?: string;
+  userName?: string;
+  checkedAt: string;
+}
+
 export interface CookieInfo {
   hasCookie: boolean;
   cookieCount: number;
@@ -10,6 +19,7 @@ export interface CookieInfo {
   };
   filePath: string;
   updatedAt?: string;
+  lastCheck?: CookieCheckResult;
 }
 
 import { getAuthHeaders } from './auth.service';
@@ -44,6 +54,18 @@ export const cookieApi = {
       headers: { ...getAuthHeaders() },
     });
     if (!res.ok) throw new Error('Không thể xóa cookie');
+    return res.json();
+  },
+
+  async checkCookie(): Promise<CookieCheckResult> {
+    const res = await fetch(`${API_BASE}/check`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders() },
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || 'Lỗi khi kiểm tra cookie');
+    }
     return res.json();
   },
 };

@@ -11,14 +11,12 @@ import {
   Copy,
   Check,
   Trash2,
-  MapPin,
   Users,
   Activity,
   Terminal,
   ChevronDown,
   ChevronUp,
   AlertCircle,
-  Home,
   ShieldCheck,
   ShieldAlert,
 } from 'lucide-react';
@@ -65,7 +63,7 @@ export const ProfileManagementPage: React.FC = () => {
   const [isTerminalOpen, setIsTerminalOpen] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'hasHometown' | 'hasLocation'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'success' | 'error'>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -230,8 +228,6 @@ export const ProfileManagementPage: React.FC = () => {
       'STT',
       'Họ và tên',
       'UID',
-      'Quê quán',
-      'Trú quán',
       'Link Profile',
       'Ngày quét',
     ];
@@ -240,8 +236,6 @@ export const ProfileManagementPage: React.FC = () => {
       idx + 1,
       `"${(p.name || '').replace(/"/g, '""')}"`,
       `"${(p.uid || '').replace(/"/g, '""')}"`,
-      `"${(p.hometown || '').replace(/"/g, '""')}"`,
-      `"${(p.location || '').replace(/"/g, '""')}"`,
       `"${(p.profileUrl || '').replace(/"/g, '""')}"`,
       `"${p.crawledAt || ''}"`,
     ]);
@@ -267,16 +261,14 @@ export const ProfileManagementPage: React.FC = () => {
     const matchesSearch =
       !term ||
       (p.name && p.name.toLowerCase().includes(term)) ||
-      (p.location && p.location.toLowerCase().includes(term)) ||
-      (p.hometown && p.hometown.toLowerCase().includes(term)) ||
       (p.uid && p.uid.toLowerCase().includes(term)) ||
       (p.profileUrl && p.profileUrl.toLowerCase().includes(term));
 
     if (!matchesSearch) return false;
 
     // Filter match
-    if (filterType === 'hasHometown') return Boolean(p.hometown);
-    if (filterType === 'hasLocation') return Boolean(p.location);
+    if (filterType === 'success') return p.status === 'SUCCESS';
+    if (filterType === 'error') return p.status !== 'SUCCESS';
     return true;
   });
 
@@ -297,7 +289,7 @@ export const ProfileManagementPage: React.FC = () => {
                 Quản lý Profile Cá Nhân
               </h1>
               <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                Nhập danh sách link Facebook cá nhân để cào bảng thông tin: Họ và tên, UID, Quê quán, Trú quán.
+                Nhập danh sách link Facebook cá nhân để cào bảng thông tin: Họ và tên, UID, Link Profile.
               </p>
             </div>
           </div>
@@ -574,25 +566,25 @@ export const ProfileManagementPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => setFilterType('hasHometown')}
+                onClick={() => setFilterType('success')}
                 className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                  filterType === 'hasHometown'
+                  filterType === 'success'
                     ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                Có quê quán
+                Thành công
               </button>
               <button
                 type="button"
-                onClick={() => setFilterType('hasLocation')}
+                onClick={() => setFilterType('error')}
                 className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                  filterType === 'hasLocation'
+                  filterType === 'error'
                     ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                Có trú quán
+                Lỗi
               </button>
             </div>
 
@@ -603,7 +595,7 @@ export const ProfileManagementPage: React.FC = () => {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Tìm họ tên, UID, quê quán, trú quán..."
+                placeholder="Tìm họ tên, UID, link profile..."
                 className="pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
             </div>
@@ -618,15 +610,13 @@ export const ProfileManagementPage: React.FC = () => {
                 <th className="py-3 px-4 w-12 text-center">STT</th>
                 <th className="py-3 px-4 min-w-[220px]">Họ và tên</th>
                 <th className="py-3 px-4 min-w-[140px]">UID</th>
-                <th className="py-3 px-4 min-w-[180px]">Quê quán</th>
-                <th className="py-3 px-4 min-w-[180px]">Trú Quán</th>
                 <th className="py-3 px-4 min-w-[110px] text-right">Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800/80">
               {filteredProfiles.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400 dark:text-slate-500">
+                  <td colSpan={4} className="py-12 text-center text-slate-400 dark:text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Users className="w-8 h-8 text-slate-300 dark:text-slate-600" />
                       <p className="font-medium">Chưa có thông tin profile nào.</p>
@@ -698,30 +688,6 @@ export const ProfileManagementPage: React.FC = () => {
                         </span>
                       ) : (
                         <span className="text-slate-400 italic">Chưa rõ</span>
-                      )}
-                    </td>
-
-                    {/* Quê quán */}
-                    <td className="py-3.5 px-4 text-xs">
-                      {p.hometown ? (
-                        <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
-                          <MapPin className="w-3.5 h-3.5 text-rose-500 shrink-0" />
-                          <span className="font-semibold">{p.hometown}</span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-400 italic">Chưa công khai</span>
-                      )}
-                    </td>
-
-                    {/* Trú Quán */}
-                    <td className="py-3.5 px-4 text-xs">
-                      {p.location ? (
-                        <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
-                          <Home className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                          <span className="font-semibold">{p.location}</span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-400 italic">Chưa công khai</span>
                       )}
                     </td>
 

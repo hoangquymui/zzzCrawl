@@ -17,6 +17,14 @@ export class StartScanDto {
   @IsOptional()
   @IsNumber()
   maxScrolls?: number;
+
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
 }
 
 export class SaveCookieDto {

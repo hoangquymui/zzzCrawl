@@ -224,6 +224,39 @@ export class ProfileManagementService {
     return undefined;
   }
 
+  private isInvalidName(name?: string | null): boolean {
+    if (!name) return true;
+    const s = name.trim();
+    if (s.length < 2 || /^Facebook$/i.test(s)) return true;
+    const patterns = [
+      /this browser is not supported/i,
+      /trình duyệt (này )?không được hỗ trợ/i,
+      /browser (is )?not supported/i,
+      /unsupported browser/i,
+      /facebook is better on the app/i,
+      /use facebook app/i,
+      /tap to use a supported browser/i,
+      /log in/i,
+      /đăng nhập/i,
+      /notifications/i,
+      /thông báo/i,
+      /friend requests/i,
+      /lời mời kết bạn/i,
+      /page not found/i,
+      /trang không tìm thấy/i,
+      /nội dung này hiện không khả dụng/i,
+      /this content isn't available/i,
+      /something went wrong/i,
+      /đã có lỗi xảy ra/i,
+      /không thể truy cập/i,
+      /người dùng facebook/i,
+      /security check/i,
+      /kiểm tra bảo mật/i,
+      /checkpoint/i,
+    ];
+    return patterns.some((p) => p.test(s));
+  }
+
   public async startCrawl(urls: string[]): Promise<{ started: boolean; count: number }> {
     if (this.isScanning) {
       return { started: false, count: 0 };
@@ -410,34 +443,72 @@ export class ProfileManagementService {
 
     // Thu thập dữ liệu từ trang chính
     const mainPageData = await page.evaluate(() => {
+      const isInvalid = (str?: string | null): boolean => {
+        if (!str) return true;
+        const s = str.trim();
+        if (s.length < 2 || /^Facebook$/i.test(s)) return true;
+        const patterns = [
+          /this browser is not supported/i,
+          /trình duyệt (này )?không được hỗ trợ/i,
+          /browser (is )?not supported/i,
+          /unsupported browser/i,
+          /facebook is better on the app/i,
+          /use facebook app/i,
+          /tap to use a supported browser/i,
+          /log in/i,
+          /đăng nhập/i,
+          /notifications/i,
+          /thông báo/i,
+          /friend requests/i,
+          /lời mời kết bạn/i,
+          /page not found/i,
+          /trang không tìm thấy/i,
+          /nội dung này hiện không khả dụng/i,
+          /this content isn't available/i,
+          /something went wrong/i,
+          /đã có lỗi xảy ra/i,
+          /không thể truy cập/i,
+          /người dùng facebook/i,
+          /security check/i,
+          /kiểm tra bảo mật/i,
+          /checkpoint/i,
+        ];
+        return patterns.some((p) => p.test(s));
+      };
+
       // 1. Tìm tên
       let name = '';
       const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
-      if (
-        ogTitle &&
-        ogTitle !== 'Facebook' &&
-        !ogTitle.includes('Log In') &&
-        !ogTitle.includes('Đăng nhập') &&
-        !ogTitle.includes('Trình duyệt')
-      ) {
+      if (ogTitle && !isInvalid(ogTitle)) {
         name = ogTitle.trim();
       }
 
       if (!name) {
-        const h1Els = Array.from(document.querySelectorAll('h1'));
+        // Lọc bỏ triệt để các H1 nằm trong banner lỗi trình duyệt hoặc phần tử ẩn
+        const h1Els = Array.from(document.querySelectorAll('h1')).filter(
+          (h) => !h.closest('#unsupported-interstitial') && !h.closest('[style*="display:none"]')
+        );
         for (const h of h1Els) {
           const t = (h.innerText || '').trim();
-          if (
-            t &&
-            t !== 'Facebook' &&
-            !t.includes('không được hỗ trợ') &&
-            !t.includes('Notifications') &&
-            !t.includes('Thông báo') &&
-            !t.includes('Friend requests') &&
-            !t.includes('Đăng nhập')
-          ) {
+          if (t && !isInvalid(t)) {
             name = t;
             break;
+          }
+          const al = (h.getAttribute('aria-label') || '').trim();
+          if (al && !isInvalid(al)) {
+            name = al;
+            break;
+          }
+        }
+      }
+
+      if (!name) {
+        // Tìm qua span tiêu đề tên trên mobile m.facebook.com
+        const nameSpan = document.querySelector('h1 span.f4, h1 span.f2, div[data-actual-height="45"] span.f2');
+        if (nameSpan) {
+          const t = (nameSpan.textContent || '').trim();
+          if (t && !isInvalid(t)) {
+            name = t;
           }
         }
       }
@@ -449,45 +520,92 @@ export class ProfileManagementService {
           .replace(/^Trang cá nhân của\s+/i, '')
           .replace(/\s*\(@[a-zA-Z0-9._-]+\).*$/i, '')
           .trim();
-        if (cleaned && cleaned !== 'Facebook') {
+        if (cleaned && !isInvalid(cleaned)) {
           name = cleaned;
         }
       }
 
-      // 2. Tìm Avatar
+      // 2. Tìm Avatar - Ưu tiên avatar đại diện thực tế trước ảnh bìa và icon rsrc
       let avatarUrl = '';
-      const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
-      if (ogImage && ogImage.includes('fbcdn.net')) {
-        avatarUrl = ogImage;
+      const isRealUserPhoto = (url?: string | null) => {
+        if (!url) return false;
+        return (
+          url.includes('fbcdn.net') &&
+          !url.includes('rsrc.php') &&
+          !url.includes('static.') &&
+          (url.includes('/t39.') || url.includes('/t1.') || url.includes('scontent'))
+        );
+      };
+
+      const candidateAvatarImgs = Array.from(
+        document.querySelectorAll(
+          'div[aria-label*="Profile photo"] img, div[aria-label*="Ảnh đại diện"] img, [aria-label*="avatar" i] img, div[role="img"] img'
+        )
+      ) as HTMLImageElement[];
+
+      for (const img of candidateAvatarImgs) {
+        const src = img.src || img.getAttribute('src') || '';
+        if (isRealUserPhoto(src)) {
+          avatarUrl = src;
+          break;
+        }
       }
+
+      if (!avatarUrl) {
+        const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
+        if (isRealUserPhoto(ogImage)) {
+          avatarUrl = ogImage!;
+        }
+      }
+
       if (!avatarUrl) {
         const svgImg = document.querySelector('svg image');
         if (svgImg) {
-          avatarUrl = svgImg.getAttribute('xlink:href') || svgImg.getAttribute('href') || '';
-        }
-      }
-      if (!avatarUrl) {
-        const imgs = Array.from(document.querySelectorAll('img[role="img"], div[role="main"] img, img'));
-        for (const img of imgs) {
-          const htmlImg = img as HTMLImageElement;
-          const src = htmlImg.src || htmlImg.getAttribute('src') || '';
-          if (src.includes('fbcdn.net') && (src.includes('/t1.') || src.includes('/t39.'))) {
-            avatarUrl = src;
-            break;
+          const href = svgImg.getAttribute('xlink:href') || svgImg.getAttribute('href') || '';
+          if (isRealUserPhoto(href)) {
+            avatarUrl = href;
           }
         }
       }
 
-      // 3. Tìm Bio (lọc bỏ các văn bản mặc định của Facebook như "đang ở trên Facebook", "Tham gia Facebook")
+      if (!avatarUrl) {
+        const imgs = Array.from(document.querySelectorAll('img[role="img"], div[role="main"] img, img')) as HTMLImageElement[];
+        for (const img of imgs) {
+          const src = img.src || img.getAttribute('src') || '';
+          if (isRealUserPhoto(src) && (src.includes('/t39.30808-1/') || src.includes('/t1.30497-1/'))) {
+            avatarUrl = src;
+            break;
+          }
+        }
+        if (!avatarUrl) {
+          for (const img of imgs) {
+            const src = img.src || img.getAttribute('src') || '';
+            if (isRealUserPhoto(src)) {
+              avatarUrl = src;
+              break;
+            }
+          }
+        }
+      }
+
+      // 3. Tìm Bio
       let bio = '';
+      const isBoilerplate = (str: string) =>
+        /đang ở trên Facebook|Tham gia Facebook|is on Facebook|Join Facebook|kết nối với|quyền chia sẻ và mở rộng|Facebook trao cho/i.test(
+          str
+        );
       const ogDesc = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
-      if (ogDesc && ogDesc.length > 3) {
-        const isBoilerplate =
-          /đang ở trên Facebook|Tham gia Facebook|is on Facebook|Join Facebook|kết nối với|quyền chia sẻ và mở rộng|Facebook trao cho/i.test(
-            ogDesc
-          );
-        if (!isBoilerplate) {
-          bio = ogDesc.trim();
+      if (ogDesc && ogDesc.length > 3 && !isBoilerplate(ogDesc) && !isInvalid(ogDesc)) {
+        bio = ogDesc.trim();
+      }
+
+      if (!bio) {
+        const bioSpan = document.querySelector('span.f17');
+        if (bioSpan) {
+          const t = (bioSpan.textContent || '').replace(/\s+/g, ' ').trim();
+          if (t && t.length > 1 && !isBoilerplate(t) && !isInvalid(t)) {
+            bio = t;
+          }
         }
       }
 
@@ -531,13 +649,14 @@ export class ProfileManagementService {
         }
       }
 
-      // 5. Lấy tất cả chuỗi văn bản từ main
+      // 5. Lấy tất cả chuỗi văn bản từ main, bỏ qua banner không hỗ trợ
       const candidateTexts: string[] = [];
-      const mainEl = document.querySelector('div[role="main"]') || document.body;
+      const mainEl = document.querySelector('div[role="main"]') || document.querySelector('#screen-root') || document.body;
       if (mainEl) {
         const walker = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT);
         let node: Node | null;
         while ((node = walker.nextNode())) {
+          if (node.parentElement?.closest('#unsupported-interstitial')) continue;
           const val = node.nodeValue ? node.nodeValue.trim() : '';
           if (val && val.length > 1 && val.length < 250) {
             candidateTexts.push(val);
@@ -696,20 +815,16 @@ export class ProfileManagementService {
       }
     }
 
-    // Nếu tên vẫn chưa tìm thấy, thử trích xuất từ candidateTexts đầu trang
-    if (!name || name === 'Facebook') {
-      for (const t of candidateTexts.slice(0, 15)) {
+    // Nếu tên vẫn chưa tìm thấy hoặc không hợp lệ, thử trích xuất từ candidateTexts đầu trang
+    if (!name || this.isInvalidName(name)) {
+      name = '';
+      for (const t of candidateTexts.slice(0, 20)) {
         if (
           t &&
-          t.length > 2 &&
+          t.length > 1 &&
           t.length < 40 &&
-          !t.includes('Facebook') &&
-          !t.includes('Share') &&
-          !t.includes('Find') &&
-          !t.includes('Add') &&
-          !t.includes('More') &&
-          !t.includes('Intro') &&
-          !t.includes('About')
+          !this.isInvalidName(t) &&
+          !/^(Message|Add friend|Follow|Share|Reels|Photos|Videos|Posts|All|Intro|About|\d+[KkMm]?)$/i.test(t)
         ) {
           name = t;
           break;
@@ -717,11 +832,16 @@ export class ProfileManagementService {
       }
     }
 
+    // Fallback an toàn cuối cùng: dùng UID / Username thay vì để chuỗi lỗi hệ thống
+    if (!name || this.isInvalidName(name)) {
+      name = uid || this.extractUidFromUrl(profileUrl) || 'Người dùng Facebook';
+    }
+
     const finalItem: UserProfileItem = {
       id: 'prof_' + (uid || Date.now().toString()) + '_' + Math.random().toString(36).substring(2, 6),
       profileUrl,
       uid,
-      name: name || 'Người dùng Facebook',
+      name,
       birthday: parsed.birthday,
       birthYear: parsed.birthYear,
       location: parsed.location,
@@ -732,7 +852,7 @@ export class ProfileManagementService {
       work: parsed.work,
       education: parsed.education,
       relationship: parsed.relationship,
-      status: name ? 'SUCCESS' : 'PARTIAL',
+      status: name && name !== 'Người dùng Facebook' ? 'SUCCESS' : 'PARTIAL',
       crawledAt: new Date().toISOString(),
     };
 
@@ -880,6 +1000,12 @@ export class ProfileManagementService {
             gender = next;
             continue;
           }
+        } else if (text === 'Female' || text === 'Nữ') {
+          gender = 'Nữ';
+          continue;
+        } else if (text === 'Male' || text === 'Nam') {
+          gender = 'Nam';
+          continue;
         }
       }
 
@@ -887,12 +1013,26 @@ export class ProfileManagementService {
       if (!work) {
         const matchWork = text.match(/^(?:Works at|Làm việc tại)\s+(.+)$/i);
         if (matchWork) work = matchWork[1].trim();
+        else if (text === 'Digital creator' || text === 'Creator' || text === 'Nhà sáng tạo nội dung số') {
+          work = text;
+        }
       }
 
       // Education
       if (!education) {
         const matchEdu = text.match(/^(?:Studied at|Học tại|Went to)\s+(.+)$/i);
         if (matchEdu) education = matchEdu[1].trim();
+        else if (
+          text.includes('Trường Đại học') ||
+          text.includes('Trường THPT') ||
+          text.includes('Đại học') ||
+          text.includes('Cao đẳng') ||
+          text.includes('University') ||
+          text.includes('College') ||
+          text.includes('High School')
+        ) {
+          education = text.replace(/\n/g, ' ').trim();
+        }
       }
 
       // Relationship

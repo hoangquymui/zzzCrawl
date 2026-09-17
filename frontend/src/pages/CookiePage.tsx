@@ -12,8 +12,11 @@ import {
   AlertCircle,
   Copy,
   Check,
+  Activity,
+  Clock,
+  User,
 } from 'lucide-react';
-import { cookieApi, CookieInfo } from '../services/cookie.service';
+import { cookieApi, CookieInfo, CookieCheckResult } from '../services/cookie.service';
 
 export const CookiePage: React.FC = () => {
   const [cookieInfo, setCookieInfo] = useState<CookieInfo | null>(null);
@@ -21,6 +24,8 @@ export const CookiePage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<CookieCheckResult | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
   );
@@ -32,6 +37,9 @@ export const CookiePage: React.FC = () => {
       const data = await cookieApi.getCookieInfo();
       setCookieInfo(data);
       setRawInput(data.rawCookie || '');
+      if (data.lastCheck) {
+        setCheckResult(data.lastCheck);
+      }
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Lỗi khi tải thông tin cookie' });
     } finally {
@@ -43,6 +51,32 @@ export const CookiePage: React.FC = () => {
     fetchCookieInfo();
   }, []);
 
+  const handleCheckCookie = async () => {
+    try {
+      setIsChecking(true);
+      setFeedback(null);
+      const result = await cookieApi.checkCookie();
+      setCheckResult(result);
+      if (result.isValid) {
+        setFeedback({
+          type: 'success',
+          message: result.message,
+        });
+      } else {
+        setFeedback({
+          type: 'error',
+          message: result.message,
+        });
+      }
+      const data = await cookieApi.getCookieInfo();
+      setCookieInfo(data);
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'Lỗi khi kiểm tra cookie' });
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!rawInput.trim()) {
       setFeedback({ type: 'error', message: 'Vui lòng nhập hoặc dán nội dung cookie.' });
@@ -51,11 +85,12 @@ export const CookiePage: React.FC = () => {
     try {
       setIsSaving(true);
       setFeedback(null);
+      setCheckResult(null);
       const updated = await cookieApi.saveCookie(rawInput);
       setCookieInfo(updated);
       setFeedback({
         type: 'success',
-        message: `Đã lưu thành công vào cookies.json (${updated.cookieCount} cookies hợp lệ).`,
+        message: `Đã lưu thành công vào cookies.json (${updated.cookieCount} cookies hợp lệ). Hãy bấm "Kiểm tra Cookie" để xác thực phiên đăng nhập.`,
       });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Lỗi khi lưu cookie' });
@@ -69,6 +104,7 @@ export const CookiePage: React.FC = () => {
     try {
       setIsClearing(true);
       setFeedback(null);
+      setCheckResult(null);
       const updated = await cookieApi.clearCookie();
       setCookieInfo(updated);
       setRawInput('');
@@ -113,26 +149,52 @@ export const CookiePage: React.FC = () => {
           </div>
         </div>
 
-        {/* Cookie Status Badge (Style chuẩn đồng nhất hệ thống) */}
-        <div className="flex items-center gap-2">
-          {hasCookie ? (
+        {/* Action Controls & Status Badge */}
+        <div className="flex items-center flex-wrap gap-2.5">
+          {/* Status Badge */}
+          {checkResult?.isValid ? (
             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold border shadow-xs bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-400">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-              <span>Cookie: đã nạp</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+              <span>Cookie: Còn hạn (Live)</span>
               <ShieldCheck className="w-4 h-4 text-emerald-500 ml-0.5" />
+            </div>
+          ) : checkResult && !checkResult.isValid ? (
+            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold border shadow-xs bg-rose-500/10 border-rose-500/25 text-rose-600 dark:text-rose-400">
+              <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+              <span>Cookie: Hết hạn (Die)</span>
+              <ShieldAlert className="w-4 h-4 text-rose-500 ml-0.5" />
+            </div>
+          ) : hasCookie ? (
+            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold border shadow-xs bg-blue-500/10 border-blue-500/25 text-blue-600 dark:text-blue-400">
+              <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
+              <span>Cookie: Đã nạp</span>
+              <ShieldCheck className="w-4 h-4 text-blue-500 ml-0.5" />
             </div>
           ) : (
             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold border shadow-xs bg-rose-500/10 border-rose-500/25 text-rose-600 dark:text-rose-400">
               <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
-              <span>Cookie: chưa nạp</span>
+              <span>Cookie: Chưa nạp</span>
               <ShieldAlert className="w-4 h-4 text-rose-500 ml-0.5" />
             </div>
           )}
 
+          {/* Button: Kiểm tra Cookie */}
+          <button
+            type="button"
+            onClick={handleCheckCookie}
+            disabled={isChecking || !hasCookie}
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-500 active:scale-98 text-white shadow-xs disabled:opacity-40 transition cursor-pointer"
+            title="Kiểm tra xem cookie còn hạn hay đã bị Facebook đăng xuất"
+          >
+            <Activity className={`w-3.5 h-3.5 ${isChecking ? 'animate-spin' : ''}`} />
+            <span>{isChecking ? 'Đang kiểm tra...' : 'Kiểm tra Cookie'}</span>
+          </button>
+
+          {/* Button: Refresh */}
           <button
             type="button"
             onClick={fetchCookieInfo}
-            disabled={isLoading}
+            disabled={isLoading || isChecking}
             className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 transition cursor-pointer shadow-xs"
             title="Tải lại trạng thái"
           >
@@ -147,17 +209,31 @@ export const CookiePage: React.FC = () => {
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs flex items-center gap-4">
           <div
             className={`p-3 rounded-xl shrink-0 ${
-              hasCookie
+              checkResult?.isValid
                 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                : checkResult && !checkResult.isValid
+                ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                : hasCookie
+                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
                 : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
             }`}
           >
-            {hasCookie ? <ShieldCheck className="w-6 h-6" /> : <ShieldAlert className="w-6 h-6" />}
+            {checkResult?.isValid ? (
+              <ShieldCheck className="w-6 h-6" />
+            ) : (
+              <ShieldAlert className="w-6 h-6" />
+            )}
           </div>
           <div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Trạng thái Cookie</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Trạng thái phiên</p>
             <p className="text-sm sm:text-base font-bold text-slate-900 dark:text-white mt-0.5">
-              {hasCookie ? 'Đã nạp vào hệ thống' : 'Chưa nạp'}
+              {checkResult?.isValid
+                ? 'Còn hạn (Live)'
+                : checkResult && !checkResult.isValid
+                ? 'Đã hết hạn / Lỗi'
+                : hasCookie
+                ? 'Đã nạp (Chưa check)'
+                : 'Chưa nạp'}
             </p>
           </div>
         </div>
@@ -175,32 +251,77 @@ export const CookiePage: React.FC = () => {
           </div>
         </div>
 
-        {/* c_user (FB UID) */}
+        {/* c_user & Tên tài khoản */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs flex items-center gap-4">
           <div className="p-3 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 shrink-0">
-            <Key className="w-6 h-6" />
+            <User className="w-6 h-6" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">UID tài khoản (c_user)</p>
-            <p className="text-sm font-mono font-bold text-slate-900 dark:text-white mt-0.5 truncate">
-              {cookieInfo?.detectedCookies?.c_user || 'Chưa nhận diện'}
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Tài khoản Facebook</p>
+            <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5 truncate">
+              {checkResult?.userName || cookieInfo?.detectedCookies?.c_user || 'Chưa nhận diện'}
             </p>
+            {cookieInfo?.detectedCookies?.c_user && (
+              <p className="text-[11px] font-mono text-slate-400 truncate">
+                UID: {cookieInfo.detectedCookies.c_user}
+              </p>
+            )}
           </div>
         </div>
 
-        {/* Session (xs) */}
+        {/* Lần kiểm tra cuối */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xs flex items-center gap-4">
           <div className="p-3 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
-            <Info className="w-6 h-6" />
+            <Clock className="w-6 h-6" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Phiên đăng nhập (xs)</p>
-            <p className="text-sm font-mono font-bold text-slate-900 dark:text-white mt-0.5 truncate">
-              {cookieInfo?.detectedCookies?.xs ? 'Có sẵn (Hợp lệ)' : 'Chưa có'}
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Kiểm tra gần nhất</p>
+            <p className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-white mt-0.5 truncate">
+              {checkResult?.checkedAt
+                ? `${new Date(checkResult.checkedAt).toLocaleTimeString('vi-VN')} ${new Date(checkResult.checkedAt).toLocaleDateString('vi-VN')}`
+                : 'Chưa kiểm tra'}
             </p>
+            {!checkResult && hasCookie && (
+              <button
+                type="button"
+                onClick={handleCheckCookie}
+                disabled={isChecking}
+                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-medium mt-0.5"
+              >
+                Bấm kiểm tra ngay
+              </button>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Live Check Result Banner */}
+      {checkResult && (
+        <div
+          className={`p-4 rounded-2xl border flex items-start gap-3.5 transition animate-in fade-in duration-200 ${
+            checkResult.isValid
+              ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-900 dark:text-emerald-200'
+              : 'bg-rose-500/10 border-rose-500/25 text-rose-900 dark:text-rose-200'
+          }`}
+        >
+          {checkResult.isValid ? (
+            <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+          ) : (
+            <ShieldAlert className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+          )}
+          <div className="text-xs sm:text-sm space-y-1">
+            <p className="font-bold">
+              {checkResult.isValid ? 'Cookie đang hoạt động tốt!' : 'Cảnh báo: Cookie đã hết hạn hoặc không hợp lệ!'}
+            </p>
+            <p className="opacity-90">{checkResult.message}</p>
+            {!checkResult.isValid && (
+              <p className="text-xs font-semibold pt-1">
+                👉 Vui lòng đăng nhập lại Facebook trên trình duyệt, copy toàn bộ JSON Cookie mới và dán vào ô bên dưới, sau đó bấm <strong>Lưu Cookie</strong>.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Main Textarea Form Card */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
