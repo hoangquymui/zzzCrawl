@@ -8,7 +8,9 @@
     "dev:frontend": "npm --prefix frontend run dev",
     "build:backend": "npm --prefix backend run build",
     "build:frontend": "npm --prefix frontend run build:backend",
-    "build": "npm run build:frontend && npm run build:backend",
-    "start": "npm --prefix backend start"
+    "build": "npm run build:frontend && npm run build:backend && node scripts/copy-deploy.js",
+    "deploy:pack": "node scripts/copy-deploy.js",
+    "start": "npm --prefix backend start",
+    "start:deploy": "cd deploy && node dist/main.js"
   }
 }
