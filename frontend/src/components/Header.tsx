@@ -24,9 +24,8 @@ const PATH_TITLES: Record<string, string> = {
   "/profile": "Trang cá nhân",
   "/reports": "Báo cáo",
   "/more": "Dữ liệu",
-  "/settings": "Settings",
-  "/help": "Get Help",
-  "/search": "Search",
+  "/settings": "Cài đặt",
+  "/help": "Trợ Giúp",
 };
 
 export const Header: React.FC<HeaderProps> = ({

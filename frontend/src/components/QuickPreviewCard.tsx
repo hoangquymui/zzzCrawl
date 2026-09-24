@@ -9,8 +9,6 @@ import {
   User,
   Copy,
   Check,
-  Repeat,
-  Sparkles,
 } from 'lucide-react';
 import { VideoItem } from '../types/video';
 import { formatNumber } from '../utils/formatters';
@@ -71,18 +69,7 @@ export const QuickPreviewCard: React.FC<QuickPreviewCardProps> = ({
           </span>
         </div>
 
-        {/* Badge Phân Loại: Gốc vs Chia sẻ */}
-        {video.isShared ? (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
-            <Repeat className="w-3 h-3" />
-            <span>Chia sẻ lại</span>
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-            <Sparkles className="w-3 h-3" />
-            <span>Bài gốc</span>
-          </span>
-        )}
+
       </div>
 
       {/* Body Content */}
@@ -115,33 +102,6 @@ export const QuickPreviewCard: React.FC<QuickPreviewCardProps> = ({
             </div>
           )}
         </div>
-
-        {/* Thông tin bài viết chia sẻ nếu có */}
-        {video.isShared && video.originalAuthor && (
-          <div className="p-2.5 rounded-xl bg-amber-50/80 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/40 text-xs">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400 flex items-center gap-1 mb-1">
-              <Repeat className="w-3 h-3" />
-              <span>Nguồn gốc bài viết</span>
-            </div>
-            <div className="text-slate-800 dark:text-slate-200 font-medium">
-              Tác giả gốc:{' '}
-              <span className="font-bold text-slate-900 dark:text-white">
-                {video.originalAuthor}
-              </span>
-            </div>
-            {video.originalPostUrl && (
-              <a
-                href={video.originalPostUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline"
-              >
-                <span>Xem bài gốc</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            )}
-          </div>
-        )}
 
         {/* Caption */}
         <div>

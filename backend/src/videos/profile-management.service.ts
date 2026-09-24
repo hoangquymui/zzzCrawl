@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, OnModuleInit, BadRequestException } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../database/database.service';
@@ -8,6 +8,7 @@ import {
   ProfileManagementState,
 } from './interfaces/profile-management.interface';
 import { VideosGateway } from './videos.gateway';
+import { CookieService } from './cookie.service';
 
 @Injectable()
 export class ProfileManagementService implements OnModuleInit {
@@ -39,7 +40,8 @@ export class ProfileManagementService implements OnModuleInit {
   constructor(
     private readonly db: DatabaseService,
     @Inject(forwardRef(() => VideosGateway))
-    private readonly videosGateway: VideosGateway
+    private readonly videosGateway: VideosGateway,
+    private readonly cookieService: CookieService
   ) {
     this.loadFromDatabase();
   }
@@ -377,6 +379,13 @@ export class ProfileManagementService implements OnModuleInit {
     if (cleanUrls.length === 0) {
       this.emitLog(`[CẢNH BÁO] Không có link profile Facebook hợp lệ để quét.`);
       return { started: false, count: 0 };
+    }
+
+    try {
+      await this.cookieService.validateCookieForCrawl();
+    } catch (err: any) {
+      this.emitLog(`[LỖI] Cookie hết hạn! Vui lòng cập nhật cookie mới.`);
+      throw new BadRequestException('Cookie hết hạn');
     }
 
     this.isScanning = true;

@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, BadRequestException } from '@nestjs/common';
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,6 +11,7 @@ import {
 import { VideosGateway } from './videos.gateway';
 import { ScraperService } from './scraper.service';
 import { DatabaseService } from '../database/database.service';
+import { CookieService } from './cookie.service';
 
 @Injectable()
 export class ProfileScannerService {
@@ -41,7 +42,8 @@ export class ProfileScannerService {
     @Inject(forwardRef(() => VideosGateway))
     private readonly videosGateway: VideosGateway,
     private readonly scraperService: ScraperService,
-    private readonly db: DatabaseService
+    private readonly db: DatabaseService,
+    private readonly cookieService: CookieService
   ) {}
 
   private getEffectiveCookiePath(): string {
@@ -225,6 +227,19 @@ export class ProfileScannerService {
       }
     }
 
+    // Tự động kiểm tra cookie trước khi crawl
+    try {
+      this.addLog('[HỆ THỐNG] Đang kiểm tra cookie trước khi quét...');
+      await this.cookieService.validateCookieForCrawl(true);
+      this.addLog('[HỆ THỐNG] Cookie hợp lệ, bắt đầu chuẩn bị phiên quét.');
+    } catch (err: any) {
+      this.addLog('[LỖI] Cookie hết hạn! Vui lòng cập nhật Cookie mới.');
+      this.videosGateway.emitProfileScannerLog('[LỖI] Cookie hết hạn');
+      this.state.status = 'ERROR';
+      this.videosGateway.emitProfileScannerStatus('ERROR');
+      throw new BadRequestException('Cookie hết hạn');
+    }
+
     this.currentCancelFlag = false;
     this.isScanning = true;
     this.state.status = 'RUNNING';
@@ -303,11 +318,15 @@ export class ProfileScannerService {
       );
     }
 
-    const cookies = this.loadCookies();
+    const cookies = this.cookieService ? this.cookieService.loadCookies() : this.loadCookies();
     if (cookies.length > 0) {
       this.addLog(`Áp dụng Cookie: ĐÃ NẠP (${cookies.length} cookies hợp lệ)`);
     } else {
-      this.addLog('Áp dụng Cookie: CHƯA CÓ (vui lòng dán Cookie nếu Facebook yêu cầu đăng nhập)');
+      this.addLog('[LỖI] Cookie hết hạn! Vui lòng nạp Cookie trước khi quét.');
+      this.videosGateway.emitProfileScannerLog('[LỖI] Cookie hết hạn');
+      this.state.status = 'ERROR';
+      this.videosGateway.emitProfileScannerStatus('ERROR');
+      return;
     }
 
     this.addLog('Khởi chạy trình duyệt Playwright Chromium...');
@@ -432,13 +451,7 @@ export class ProfileScannerService {
           }
         });
 
-        const matchedVideoIds = new Set<string>();
-        this.state.foundPosts.forEach((p) => {
-          if (p.videoId) matchedVideoIds.add(p.videoId);
-        });
-        const timelineAllPosts: ScannedPostItem[] = [];
         const reelsTabList = profileReelsMap[profileUrl] || [];
-        let consecutiveOldPostsCount = 0;
 
         try {
           res = await page.goto(timelineUrl, {
@@ -526,203 +539,85 @@ export class ProfileScannerService {
             this.addLog(`  -> Xác định tên Profile/Trang: "${profileOwnerName}"`);
           }
 
-          // Vòng lặp cuộn trang
-          for (let scroll = 0; scroll <= maxScrolls; scroll++) {
+          // ========================================================
+          // BƯỚC 1: LẤY LINK VÀ LOẠI CỦA TRANG CÁ NHÂN
+          // ========================================================
+          this.addLog(
+            `[BƯỚC 1: THU THẬP LINK & LOẠI] Bắt đầu quét dòng thời gian Profile ${pIdx + 1}: ${profileUrl}...`
+          );
+
+          const discoveredItemsMap = new Map<
+            string,
+            { loai: string; hasImage: boolean; hasVideo: boolean }
+          >();
+
+          const addDiscoveredItem = (it: {
+            url: string;
+            loai: string;
+            hasImage?: boolean;
+            hasVideo?: boolean;
+          }) => {
+            if (!discoveredItemsMap.has(it.url)) {
+              discoveredItemsMap.set(it.url, {
+                loai: it.loai,
+                hasImage: Boolean(it.hasImage),
+                hasVideo: Boolean(it.hasVideo),
+              });
+            } else {
+              const existing = discoveredItemsMap.get(it.url)!;
+              if (it.hasImage) existing.hasImage = true;
+              if (it.hasVideo) existing.hasVideo = true;
+            }
+          };
+
+          // Thu thập link ban đầu từ trang DOM
+          const initialLinks = await this.extractTimelineLinksAndTypes(page);
+          initialLinks.forEach((it) => addDiscoveredItem(it));
+
+          // Cuộn dòng thời gian để bắt thêm link và loại
+          for (let scroll = 1; scroll <= maxScrolls; scroll++) {
             if (this.currentCancelFlag) break;
 
-            // Đọc thêm stories từ các script JSON trên trang
-            try {
-              const html = await page.content();
-              const scriptStories = this.parseStoriesFromHtml(html);
-              for (const s of scriptStories) {
-                capturedGraphQLStories.push(s);
-              }
-            } catch {}
+            const prevHeight = await page.evaluate(() => document.body.scrollHeight);
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page
+              .waitForFunction((h: number) => document.body.scrollHeight > h, prevHeight, {
+                timeout: 2500,
+              })
+              .catch(() => {});
 
-            const posts: ScannedPostItem[] = await this.extractPosts(
-              page,
-              profileOwnerName
-            );
+            const scrollLinks = await this.extractTimelineLinksAndTypes(page);
+            scrollLinks.forEach((it) => addDiscoveredItem(it));
 
-            // Chuẩn hóa ngày và nguồn profile cho các bài viết lấy từ DOM
-            for (const p of posts) {
-              if (!p.profileSource) {
-                p.profileSource = profileUrl;
-              }
-              if (profileOwnerName && (!p.author || p.author === 'Người dùng Facebook')) {
-                p.author = profileOwnerName;
-              }
-              if (p.date && (!p.timestamp || p.timestamp === 0)) {
-                const parsed = this.parseFacebookDate(p.date);
-                if (parsed.timestamp > 0) {
-                  p.timestamp = parsed.timestamp;
-                  p.date = parsed.formatted;
-                }
-              }
-            }
-
-            // Làm giàu thông tin cho các bài viết DOM từ capturedGraphQLStories (chưa thêm mới ở bước này để tránh trùng lặp 0 tương tác)
+            // Bổ sung permalink từ stream GraphQL Comet
             for (const s of capturedGraphQLStories) {
               if (s.permalink_url) {
-                const sMsgClean = this.cleanTextForMatching(s.msg);
-                const sId = this.extractPostIdFromUrl(s.permalink_url);
-
-                const matchPost = (p: ScannedPostItem) => {
-                  if (p.postUrl && p.postUrl !== 'N/A') {
-                    if (p.postUrl === s.permalink_url) return true;
-                    if (sId) {
-                      const pId = this.extractPostIdFromUrl(p.postUrl);
-                      if (pId && pId === sId) return true;
-                    }
-                  }
-                  if (s.attachedVideoId && p.videoId && p.videoId === s.attachedVideoId) {
-                    return true;
-                  }
-                  if (sMsgClean && sMsgClean.length >= 10 && p.textPreview) {
-                    const pClean = this.cleanTextForMatching(p.textPreview);
-                    if (pClean && (sMsgClean.includes(pClean.slice(0, 30)) || pClean.includes(sMsgClean.slice(0, 30)))) {
-                      return true;
-                    }
-                  }
-                  return false;
-                };
-
-                const existingPost = posts.find(matchPost) || timelineAllPosts.find(matchPost);
-
-                if (existingPost) {
-                  // Cập nhật link chuẩn từ permalink nếu bài viết từ DOM chỉ có link ảnh
-                  if ((!existingPost.postUrl || existingPost.postUrl === 'N/A' || existingPost.postUrl.includes('/photo/')) && s.permalink_url) {
-                    existingPost.postUrl = this.scraperService.sanitizeUrl(s.permalink_url);
-                  }
-                  // Cập nhật tương tác nếu bài viết chưa có mà GraphQL có
-                  if ((!existingPost.likesCount || existingPost.likesCount === '0') && s.reaction_count > 0) {
-                    existingPost.likesCount = String(s.reaction_count);
-                  }
-                  if ((!existingPost.commentsCount || existingPost.commentsCount === '0') && s.comment_count > 0) {
-                    existingPost.commentsCount = String(s.comment_count);
-                  }
-                  if ((!existingPost.sharesCount || existingPost.sharesCount === '0') && s.share_count > 0) {
-                    existingPost.sharesCount = String(s.share_count);
-                  }
+                const sUrl = this.scraperService.sanitizeUrl(s.permalink_url);
+                if (sUrl.includes('/photo/') || sUrl.includes('/photos/') || sUrl.includes('photo.php')) {
+                  continue;
                 }
-              }
-            }
-
-            for (let post of posts) {
-              post = this.sanitizeScannedPost(post);
-              // Thử gán thông tin tác giả và link bài viết từ capturedGraphQLStories
-              if (capturedGraphQLStories.length > 0) {
-                // 1. Khớp theo postUrl hoặc cùng ID bài viết trong link
-                let matchedStory = capturedGraphQLStories.find((s) => {
-                  if (!s.permalink_url) return false;
-                  if (post.postUrl && post.postUrl !== 'N/A') {
-                    if (post.postUrl === s.permalink_url) return true;
-                    const id1 = post.postUrl.match(/(?:posts|videos|reel|fbid=|\/)\/?(\d{9,})/)?.[1];
-                    const id2 = s.permalink_url.match(/(?:posts|videos|reel|fbid=|\/)\/?(\d{9,})/)?.[1];
-                    if (id1 && id2 && id1 === id2) return true;
-                  }
-                  if (post.videoId && s.attachedVideoId && post.videoId === s.attachedVideoId) {
-                    return true;
-                  }
-                  return false;
+                const isVid = Boolean(s.attachedReelUrl || s.attachedVideoId);
+                addDiscoveredItem({
+                  url: sUrl,
+                  loai: isVid ? 'Video' : 'Bài viết',
+                  hasVideo: isVid,
+                  hasImage: false,
                 });
-
-                // 2. Khớp theo videoId nếu có
-                if (!matchedStory && post.videoId) {
-                  matchedStory = capturedGraphQLStories.find(
-                    (s) => s.attachedVideoId && s.attachedVideoId === post.videoId
-                  );
-                }
-
-                // 3. Khớp theo text snippet
-                if (!matchedStory && post.textPreview) {
-                  const cleanP = post.textPreview.slice(0, 50).trim().toLowerCase();
-                  if (cleanP.length >= 8) {
-                    matchedStory = capturedGraphQLStories.find((s) => {
-                      if (!s.msg) return false;
-                      const sLow = s.msg.toLowerCase();
-                      return sLow.includes(cleanP) || cleanP.includes(sLow.slice(0, 30));
-                    });
-                  }
-                }
-
-                if (matchedStory) {
-                  if (matchedStory.permalink_url && (!post.postUrl || post.postUrl === 'N/A')) {
-                    post.postUrl = this.scraperService.sanitizeUrl(matchedStory.permalink_url);
-                    post.id = `${post.isShared ? 'share' : 'orig'}_${post.postUrl}`;
-                  }
-                  if (matchedStory.author && (!post.author || post.author === 'Người dùng Facebook')) {
-                    post.author = matchedStory.author;
-                  }
-                  if (matchedStory.creation_time && (!post.timestamp || post.timestamp === 0)) {
-                    const dateInfo = this.parseFacebookDate(matchedStory.creation_time);
-                    post.date = dateInfo.formatted;
-                    post.timestamp = dateInfo.timestamp;
-                  }
-                  // Cập nhật lượt tương tác từ GraphQL nếu DOM trả về '0'
-                  if ((!post.likesCount || post.likesCount === '0') && matchedStory.reaction_count > 0) {
-                    post.likesCount = String(matchedStory.reaction_count);
-                  }
-                  if ((!post.commentsCount || post.commentsCount === '0') && matchedStory.comment_count > 0) {
-                    post.commentsCount = String(matchedStory.comment_count);
-                  }
-                  if ((!post.sharesCount || post.sharesCount === '0') && matchedStory.share_count > 0) {
-                    post.sharesCount = String(matchedStory.share_count);
-                  }
-                }
               }
-
-              timelineAllPosts.push(post);
-
-              // Gán lượt xem từ map Reels nếu feed card không có (cả bài gốc và bài chia sẻ đều lấy lượt xem của Reel)
-              if (
-                (!post.viewsCount || post.viewsCount === '-') &&
-                post.videoId &&
-                globalViewsMap[post.videoId]
-              ) {
-                post.viewsCount = globalViewsMap[post.videoId];
-              }
-
-              if (!seenPostIds.has(post.id)) {
-                seenPostIds.add(post.id);
-                this.state.postsCount++;
-
-                if (post.hasVideo) {
-                  this.state.videosCount++;
-                }
-
-                // Chế độ lấy hết: mọi bài viết đều vào kết quả (Bài viết/Video/Hình ảnh/Chia sẻ), chỉ lọc theo khoảng ngày
-                const inRange = this.isDateInRange(post.timestamp, startTimestamp, endTimestamp);
-                if (inRange) {
-                  consecutiveOldPostsCount = 0;
-                  this.state.matchedCount++;
-                  post.profileSource = profileUrl;
-                  post = this.sanitizeScannedPost(post);
-                  this.state.foundPosts.push(post);
-                  this.videosGateway.emitProfileScannerFound(post);
-
-                  this.addLog('');
-                  this.addLog(`[FOUND trên Profile ${pIdx + 1}] [${post.loai || post.postType}] ${post.author} | Ngày: ${post.date}`);
-                  this.addLog(`Tương tác: 👍 ${post.likesCount} Like | 💬 ${post.commentsCount} Cmt | ↗ ${post.sharesCount} Share | 👁 ${post.viewsCount} View`);
-                  this.addLog(`Nội dung: ${post.textPreview.slice(0, 70)}...`);
-                  this.addLog(`Link: ${post.postUrl !== 'N/A' ? post.postUrl : (post.reelUrl || post.videoUrl)}`);
-                } else {
-                  if (startTimestamp && post.timestamp && post.timestamp < startTimestamp) {
-                    consecutiveOldPostsCount++;
-                  }
-                  this.addLog(`  [BỎ QUA DO KHOẢNG THỜI GIAN] Bài viết (${post.date}) nằm ngoài khoảng ngày [${startDate || '...'} -> ${endDate || '...'}].`);
-                }
+              if (s.attachedReelUrl) {
+                const rUrl = this.scraperService.sanitizeUrl(s.attachedReelUrl);
+                addDiscoveredItem({
+                  url: rUrl,
+                  loai: 'Video',
+                  hasVideo: true,
+                  hasImage: false,
+                });
               }
             }
 
-            // Cơ chế Early Stop: Nếu đã thiết lập startDate và gặp nhiều bài viết cũ hơn startDate
-            // (cần >=3 để tránh dừng oan khi profile ghim 1-2 bài cũ lên đầu timeline)
-            if (consecutiveOldPostsCount >= 3) {
-              this.addLog(
-                `  [DỪNG CUỘN SỚM] Đã quét đến các bài viết cũ hơn ngày bắt đầu (${startDate}) trên profile ${pIdx + 1}.`
-              );
-              break;
-            }
+            this.addLog(
+              `  -> [Cuộn ${scroll}/${maxScrolls}] Đã tìm thấy ${discoveredItemsMap.size} bài viết/video.`
+            );
 
             this.state.progress = {
               profileIndex: pIdx + 1,
@@ -736,238 +631,251 @@ export class ProfileScannerService {
             };
             this.videosGateway.emitProfileScannerProgress(this.state.progress);
 
-            if (scroll < maxScrolls) {
-              const prevHeight = await page.evaluate(() => document.body.scrollHeight);
-              await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-              // Chờ nội dung mới thực sự được nạp (chiều cao tăng) thay vì chờ cứng, tối đa 2.5s
-              await page
-                .waitForFunction((h: number) => document.body.scrollHeight > h, prevHeight, {
-                  timeout: 2500,
-                })
-                .catch(() => {});
+            const scrollBlocked = await this.checkIfLoginRequired(page);
+            if (scrollBlocked) {
+              await this.dismissLoginModalIfPossible(page);
+            }
+          }
 
-              const scrollBlocked = await this.checkIfLoginRequired(page);
-              if (scrollBlocked) {
-                await this.dismissLoginModalIfPossible(page);
+          // Bổ sung các permalink từ capturedGraphQLStories
+          for (const s of capturedGraphQLStories) {
+            if (s.permalink_url) {
+              const sUrl = this.scraperService.sanitizeUrl(s.permalink_url);
+              if (sUrl.includes('/photo/') || sUrl.includes('/photos/') || sUrl.includes('photo.php')) {
+                continue;
+              }
+              const isVid = Boolean(s.attachedReelUrl || s.attachedVideoId);
+              addDiscoveredItem({
+                url: sUrl,
+                loai: isVid ? 'Video' : 'Bài viết',
+                hasVideo: isVid,
+                hasImage: false,
+              });
+            }
+            if (s.attachedReelUrl) {
+              const rUrl = this.scraperService.sanitizeUrl(s.attachedReelUrl);
+              addDiscoveredItem({
+                url: rUrl,
+                loai: 'Video',
+                hasVideo: true,
+                hasImage: false,
+              });
+            }
+          }
+
+          // Bổ sung các link từ tab Reels nếu có
+          for (const r of reelsTabList) {
+            if (r.reelUrl && r.reelUrl !== 'N/A') {
+              const rUrl = this.scraperService.sanitizeUrl(r.reelUrl);
+              addDiscoveredItem({
+                url: rUrl,
+                loai: 'Video',
+                hasVideo: true,
+                hasImage: false,
+              });
+            }
+          }
+
+          // Đóng trang Playwright ngay khi kết thúc Bước 1 để giải phóng tài nguyên
+          try {
+            await page.close();
+          } catch {}
+
+          // Chuẩn hóa và lọc trùng lặp danh sách link thu được
+          const uniqueItemList: Array<{
+            url: string;
+            loai: string;
+            hasImage: boolean;
+            hasVideo: boolean;
+          }> = [];
+          const seenIdSet = new Set<string>();
+
+          for (const [rawUrl, meta] of discoveredItemsMap.entries()) {
+            const cleanU = this.scraperService.sanitizeUrl(rawUrl);
+            const pId = this.extractPostIdFromUrl(cleanU);
+            if (pId) {
+              if (!seenIdSet.has(pId)) {
+                seenIdSet.add(pId);
+                uniqueItemList.push({
+                  url: cleanU,
+                  loai: meta.loai,
+                  hasImage: meta.hasImage,
+                  hasVideo: meta.hasVideo,
+                });
+              }
+            } else {
+              if (!uniqueItemList.some((u) => u.url === cleanU)) {
+                uniqueItemList.push({
+                  url: cleanU,
+                  loai: meta.loai,
+                  hasImage: meta.hasImage,
+                  hasVideo: meta.hasVideo,
+                });
               }
             }
           }
 
-          // Sau khi hoàn tất cuộn timeline, chỉ bổ sung story từ capturedGraphQLStories nếu HOÀN TOÀN chưa có trên DOM
-          for (const s of capturedGraphQLStories) {
-            if (!s.permalink_url) continue;
-            const sMsgClean = this.cleanTextForMatching(s.msg);
-            const sId = this.extractPostIdFromUrl(s.permalink_url);
+          this.addLog('');
+          this.addLog(
+            `[BƯỚC 1 HOÀN TẤT] Thu thập được ${uniqueItemList.length} link bài viết/video duy nhất từ Profile ${pIdx + 1}.`
+          );
 
-            const alreadyInTimeline = timelineAllPosts.some((p) => {
-              if (p.postUrl && p.postUrl !== 'N/A') {
-                if (p.postUrl === s.permalink_url) return true;
-                if (sId) {
-                  const pId = this.extractPostIdFromUrl(p.postUrl);
-                  if (pId && pId === sId) return true;
-                }
-              }
-              if (s.attachedVideoId && p.videoId && p.videoId === s.attachedVideoId) return true;
-              if (sMsgClean && sMsgClean.length >= 10 && p.textPreview) {
-                const pClean = this.cleanTextForMatching(p.textPreview);
-                if (pClean && (sMsgClean.includes(pClean.slice(0, 30)) || pClean.includes(sMsgClean.slice(0, 30)))) return true;
-              }
-              return false;
-            });
+          // ========================================================
+          // BƯỚC 2: CRAWL CAPTION, TƯƠNG TÁC, NGÀY ĐĂNG BẰNG LOGIC CỦA TRANG DỮ LIỆU
+          // ========================================================
+          this.addLog('');
+          this.addLog(
+            `[BƯỚC 2: CRAWL DỮ LIỆU CHI TIẾT] Bắt đầu cào caption, tương tác, ngày đăng cho ${uniqueItemList.length} bài viết bằng logic của Trang Dữ liệu...`
+          );
 
-            if (!alreadyInTimeline && !seenPostIds.has(`post_${s.permalink_url}`) && !seenPostIds.has(`share_${s.permalink_url}`)) {
-              const dateInfo = s.creation_time
-                ? this.parseFacebookDate(s.creation_time)
+          const seenCanonicalUrls = new Set<string>();
+          let consecutiveOldPosts = 0;
+          let crawledCount = 0;
+
+          for (const item of uniqueItemList) {
+            if (this.currentCancelFlag) break;
+
+            // Bỏ qua nếu là link photo
+            if (item.url.includes('/photo/') || item.url.includes('/photos/') || item.url.includes('photo.php')) {
+              continue;
+            }
+
+            crawledCount++;
+
+            try {
+              // Sử dụng chính logic crawl của trang dữ liệu (ScraperService.scrapeVideo)
+              const scraped = await this.scraperService.scrapeVideo(item.url);
+              if (!scraped) continue;
+
+              const finalUrl = scraped.link || item.url;
+              if (finalUrl.includes('/photo/') || finalUrl.includes('/photos/') || finalUrl.includes('photo.php')) {
+                continue;
+              }
+              if (seenCanonicalUrls.has(finalUrl)) continue;
+              seenCanonicalUrls.add(finalUrl);
+
+              // Xử lý ngày đăng & kiểm tra khoảng thời gian
+              const dateInfo = scraped.ngayDang
+                ? this.parseFacebookDate(scraped.ngayDang)
                 : { formatted: 'Gần đây', timestamp: 0 };
 
-              const isSharedPost = Boolean(s.isShared);
-              const hasVid = Boolean(s.attachedReelUrl || s.attachedVideoId);
-              const item: ScannedPostItem = this.sanitizeScannedPost({
-                id: `${isSharedPost ? 'share' : 'post'}_${s.permalink_url}`,
-                videoId: s.attachedVideoId || '',
-                isShared: isSharedPost,
-                hasVideo: hasVid,
-                loai: isSharedPost ? 'Chia sẻ' : hasVid ? 'Video' : 'Bài viết',
-                postUrl: s.permalink_url,
-                videoUrl: s.attachedReelUrl || 'N/A',
-                reelUrl: s.attachedReelUrl || 'N/A',
+              const inRange = this.isDateInRange(dateInfo.timestamp, startTimestamp, endTimestamp);
+              if (!inRange) {
+                if (startTimestamp && dateInfo.timestamp && dateInfo.timestamp < startTimestamp) {
+                  consecutiveOldPosts++;
+                }
+                this.addLog(
+                  `  [BỎ QUA DO KHOẢNG THỜI GIAN] [${scraped.loai || item.loai}] Ngày: ${dateInfo.formatted} nằm ngoài [${startDate || '...'} -> ${endDate || '...'}].`
+                );
+                // Nếu gặp nhiều bài cũ hơn ngày bắt đầu -> dừng sớm
+                if (consecutiveOldPosts >= 5 && startTimestamp) {
+                  this.addLog(`  [DỪNG CRAWL SỚM] Đã gặp các bài viết cũ hơn ngày bắt đầu (${startDate}).`);
+                  break;
+                }
+                continue;
+              }
+
+              consecutiveOldPosts = 0;
+
+              // PHÂN LOẠI CHÍNH XÁC THEO YÊU CẦU:
+              // "nếu tương tác có mắt xem thì là link video, còn không có thì là hình ảnh.
+              // bài viết là bài không có hình ảnh hay video"
+
+              // 1. Kiểm tra bài có mắt xem (lượt xem / views) hay không
+              const hasViews =
+                (scraped.LuotXem && scraped.LuotXem > 0) ||
+                Boolean(
+                  scraped.postId &&
+                    globalViewsMap[scraped.postId] &&
+                    globalViewsMap[scraped.postId] !== '-' &&
+                    globalViewsMap[scraped.postId] !== '0'
+                );
+
+              // 2. Kiểm tra link có phải link video chuyên biệt (/reel/, /watch, /videos/, tiktok)
+              const isDirectVideoUrl =
+                finalUrl.includes('/reel/') ||
+                finalUrl.includes('/reels/') ||
+                finalUrl.includes('/watch') ||
+                finalUrl.includes('/videos/') ||
+                scraped.loai === 'Facebook Reel' ||
+                scraped.loai === 'Facebook Video' ||
+                scraped.loai === 'TikTok Video';
+
+              // ĐIỀU KIỆN 1: VIDEO (tương tác có mắt xem HOẶC link chuyên biệt về video)
+              const isVideo = hasViews || isDirectVideoUrl;
+
+              // ĐIỀU KIỆN 2 & 3: HÌNH ẢNH vs BÀI VIẾT (khi không có mắt xem)
+              let finalLoai: 'Video' | 'Hình ảnh' | 'Bài viết';
+              if (isVideo) {
+                finalLoai = 'Video';
+              } else {
+                const hasImage =
+                  Boolean(item.hasImage) ||
+                  Boolean(scraped.hasImage) ||
+                  scraped.loai === 'Facebook Photo' ||
+                  finalUrl.includes('/photos/') ||
+                  finalUrl.includes('/photo');
+
+                if (hasImage) {
+                  finalLoai = 'Hình ảnh';
+                } else {
+                  finalLoai = 'Bài viết';
+                }
+              }
+
+              const postItem: ScannedPostItem = this.sanitizeScannedPost({
+                id: `post_${finalUrl}`,
+                videoId: scraped.postId || '',
+                isShared: false,
+                hasVideo: isVideo,
+                loai: finalLoai,
+                postUrl: finalUrl,
+                videoUrl: isVideo ? finalUrl : 'N/A',
+                reelUrl: finalUrl.includes('/reel/') ? finalUrl : 'N/A',
                 videoPoster: '',
-                author: profileOwnerName || s.author || 'Người dùng Facebook',
-                attachedAuthor: s.attachedAuthor || undefined,
-                postType: isSharedPost ? 'Chia sẻ' : 'Bài viết',
+                author: scraped.nguoiDang || profileOwnerName || 'Người dùng Facebook',
+                postType: scraped.loai || finalLoai,
                 date: dateInfo.formatted,
                 timestamp: dateInfo.timestamp,
-                textPreview: s.msg || (isSharedPost ? '(Bài chia sẻ)' : '(Không có nội dung văn bản)'),
-                viewsCount: '-',
-                likesCount: s.reaction_count > 0 ? String(s.reaction_count) : '0',
-                commentsCount: s.comment_count > 0 ? String(s.comment_count) : '0',
-                sharesCount: s.share_count > 0 ? String(s.share_count) : '0',
+                textPreview: scraped.caption || '(Không có nội dung văn bản)',
+                viewsCount: scraped.LuotXem > 0 ? String(scraped.LuotXem) : '-',
+                likesCount: String(scraped.LuotLike || 0),
+                commentsCount: String(scraped.LuotComment || 0),
+                sharesCount: String(scraped.SoLuongNguoiShare || 0),
                 profileSource: profileUrl,
               });
 
-              seenPostIds.add(item.id);
-              timelineAllPosts.push(item);
+              this.state.foundPosts.push(postItem);
               this.state.postsCount++;
-              if (item.hasVideo) this.state.videosCount++;
-              const inRange = this.isDateInRange(item.timestamp, startTimestamp, endTimestamp);
-              if (inRange) {
-                this.state.matchedCount++;
-                this.state.foundPosts.push(item);
-                this.videosGateway.emitProfileScannerFound(item);
-              }
-            }
-          }
-
-          // 2. Thu thập Reels trực tiếp từ tab /reels/ nếu có
-          if (reelsTabList.length > 0) {
-            this.addLog(`Đang trích xuất thông tin chi tiết cho ${reelsTabList.length} Reels từ tab Reels...`);
-            for (const r of reelsTabList) {
-              if (this.currentCancelFlag) break;
-              if (r.reelUrl && r.reelUrl !== 'N/A') {
-                try {
-                  // Ưu tiên HTTPS Request (nhanh ~0.8s), chỉ mở trình duyệt khi HTTP không đủ dữ liệu
-                  let reelItem =
-                    (await this.buildReelItemFromHttp(
-                      r.reelUrl,
-                      r.videoId,
-                      r.viewsCount,
-                      profileOwnerName
-                    )) ||
-                    (await this.extractReelDetails(
-                      page,
-                      r.reelUrl,
-                      r.videoId,
-                      r.viewsCount,
-                      profileOwnerName
-                    ));
-                  if (reelItem && !seenPostIds.has(reelItem.id)) {
-                    seenPostIds.add(reelItem.id);
-                    if (reelItem.videoId) {
-                      globalReelDetailsMap[reelItem.videoId] = {
-                        likesCount: reelItem.likesCount,
-                        commentsCount: reelItem.commentsCount,
-                        sharesCount: reelItem.sharesCount,
-                      };
-                    }
-                    this.state.postsCount++;
-                    if (reelItem.hasVideo) {
-                      this.state.videosCount++;
-                    }
-                    // Chuẩn hóa ngày cho reelItem
-                    if (reelItem.date && (!reelItem.timestamp || reelItem.timestamp === 0)) {
-                      const parsed = this.parseFacebookDate(reelItem.date);
-                      if (parsed.timestamp > 0) {
-                        reelItem.timestamp = parsed.timestamp;
-                        reelItem.date = parsed.formatted;
-                      }
-                    }
-
-                    if (reelItem.hasVideo) {
-                      if (reelItem.videoId) matchedVideoIds.add(reelItem.videoId);
-
-                      const inRange = this.isDateInRange(reelItem.timestamp, startTimestamp, endTimestamp);
-                      if (inRange) {
-                        this.state.matchedCount++;
-                        reelItem = this.sanitizeScannedPost(reelItem);
-                        reelItem.profileSource = profileUrl;
-                        this.state.foundPosts.push(reelItem);
-                        this.videosGateway.emitProfileScannerFound(reelItem);
-
-                        this.addLog('');
-                        this.addLog(`[FOUND Reel trên Profile ${pIdx + 1}] ${reelItem.author} | Ngày: ${reelItem.date}`);
-                        this.addLog(
-                          `Tương tác: 👍 ${reelItem.likesCount} Like | 💬 ${reelItem.commentsCount} Cmt | ↗ ${reelItem.sharesCount} Share | 👁 ${reelItem.viewsCount} View`
-                        );
-                        this.addLog(`Nội dung: ${reelItem.textPreview.slice(0, 70)}...`);
-                        this.addLog(`Link: ${reelItem.reelUrl}`);
-                      } else {
-                        this.addLog(`  [BỎ QUA DO KHOẢNG THỜI GIAN] Reel (${reelItem.date}) nằm ngoài khoảng ngày [${startDate || '...'} -> ${endDate || '...'}].`);
-                      }
-                    }
-
-                    this.state.progress = {
-                      profileIndex: pIdx + 1,
-                      totalProfiles: urls.length,
-                      currentScroll: maxScrolls,
-                      maxScrolls,
-                      currentUrl: profileUrl,
-                      postsCount: this.state.postsCount,
-                      videosCount: this.state.videosCount,
-                      matchedCount: this.state.matchedCount,
-                    };
-                    this.videosGateway.emitProfileScannerProgress(this.state.progress);
-                  }
-                } catch (rErr: any) {
-                  this.addLog(
-                    `  [Cảnh báo] Lỗi khi đọc Reel ${r.reelUrl}: ${rErr?.message || String(rErr)}`
-                  );
-                }
-              }
-            }
-          }
-
-          // Rà soát lại xem trên timeline có bài chia sẻ nào liên kết với các video vừa khớp không
-          for (const p of timelineAllPosts) {
-            if (
-              p.isShared &&
-              p.videoId &&
-              matchedVideoIds.has(p.videoId) &&
-              !seenPostIds.has(p.id)
-            ) {
-              seenPostIds.add(p.id);
-              if ((!p.viewsCount || p.viewsCount === '-') && globalViewsMap[p.videoId]) {
-                p.viewsCount = globalViewsMap[p.videoId];
-              }
-
-              // Đảm bảo postUrl và tương tác của bài chia sẻ nếu trước đó chưa gán
-              if (capturedGraphQLStories.length > 0) {
-                const mStory = capturedGraphQLStories.find(
-                  (s) => (p.videoId && s.attachedVideoId === p.videoId) ||
-                         (p.postUrl && p.postUrl !== 'N/A' && s.permalink_url === p.postUrl)
-                );
-                if (mStory) {
-                  if ((!p.postUrl || p.postUrl === 'N/A') && mStory.permalink_url) {
-                    p.postUrl = mStory.permalink_url;
-                    p.id = `share_${p.postUrl}`;
-                  }
-                  if ((!p.likesCount || p.likesCount === '0') && mStory.reaction_count > 0) {
-                    p.likesCount = String(mStory.reaction_count);
-                  }
-                  if ((!p.commentsCount || p.commentsCount === '0') && mStory.comment_count > 0) {
-                    p.commentsCount = String(mStory.comment_count);
-                  }
-                  if ((!p.sharesCount || p.sharesCount === '0') && mStory.share_count > 0) {
-                    p.sharesCount = String(mStory.share_count);
-                  }
-                }
-              }
-
-              // Dự phòng từ thông tin Reel gốc nếu có
-              if (p.videoId && globalReelDetailsMap[p.videoId]) {
-                const rDet = globalReelDetailsMap[p.videoId];
-                if ((!p.likesCount || p.likesCount === '0') && rDet.likesCount && rDet.likesCount !== '0') {
-                  p.likesCount = rDet.likesCount;
-                }
-                if ((!p.commentsCount || p.commentsCount === '0') && rDet.commentsCount && rDet.commentsCount !== '0') {
-                  p.commentsCount = rDet.commentsCount;
-                }
-                if ((!p.sharesCount || p.sharesCount === '0') && rDet.sharesCount && rDet.sharesCount !== '0') {
-                  p.sharesCount = rDet.sharesCount;
-                }
-              }
-
+              if (postItem.hasVideo) this.state.videosCount++;
               this.state.matchedCount++;
-              const sanitizedP = this.sanitizeScannedPost(p);
-              sanitizedP.profileSource = profileUrl;
-              this.state.foundPosts.push(sanitizedP);
-              this.videosGateway.emitProfileScannerFound(sanitizedP);
+
+              // Bắn realtime Socket.IO lên giao diện
+              this.videosGateway.emitProfileScannerFound(postItem);
 
               this.addLog('');
-              this.addLog(`[FOUND Bài chia sẻ khớp Reel trên Profile ${pIdx + 1}]`);
-              this.addLog(`Tác giả: ${p.author} | Loại: ${p.postType}`);
-              this.addLog(`Tương tác: 👍 ${p.likesCount} Like | 💬 ${p.commentsCount} Cmt | ↗ ${p.sharesCount} Share | 👁 ${p.viewsCount} View`);
-              this.addLog(`Nội dung: ${p.textPreview.slice(0, 70)}...`);
-              this.addLog(`Link: ${p.postUrl !== 'N/A' ? p.postUrl : (p.reelUrl || p.videoUrl)}`);
+              this.addLog(
+                `[FOUND Bài ${crawledCount}/${uniqueItemList.length}] [${postItem.loai}] ${postItem.author} | Ngày: ${postItem.date}`
+              );
+              this.addLog(
+                `Tương tác: 👍 ${postItem.likesCount} Like | 💬 ${postItem.commentsCount} Cmt | ↗ ${postItem.sharesCount} Share | 👁 ${postItem.viewsCount} View`
+              );
+              this.addLog(`Nội dung: ${postItem.textPreview.slice(0, 70)}...`);
+              this.addLog(`Link: ${postItem.postUrl}`);
+
+              this.state.progress = {
+                profileIndex: pIdx + 1,
+                totalProfiles: urls.length,
+                currentScroll: crawledCount,
+                maxScrolls: uniqueItemList.length,
+                currentUrl: profileUrl,
+                postsCount: this.state.postsCount,
+                videosCount: this.state.videosCount,
+                matchedCount: this.state.matchedCount,
+              };
+              this.videosGateway.emitProfileScannerProgress(this.state.progress);
+            } catch (crawlErr: any) {
+              this.addLog(`  [Lỗi cào ${item.url}]: ${crawlErr?.message || String(crawlErr)}`);
             }
           }
         } catch (profErr: any) {
@@ -986,6 +894,10 @@ export class ProfileScannerService {
       for (const p of this.state.foundPosts) {
         if ((!p.viewsCount || p.viewsCount === '-') && p.videoId && globalViewsMap[p.videoId]) {
           p.viewsCount = globalViewsMap[p.videoId];
+          if (p.viewsCount && p.viewsCount !== '-' && p.viewsCount !== '0') {
+            p.loai = 'Video';
+            p.hasVideo = true;
+          }
         }
         if (p.videoId && globalReelDetailsMap[p.videoId]) {
           const rDet = globalReelDetailsMap[p.videoId];
@@ -1067,6 +979,182 @@ export class ProfileScannerService {
     this.addLog(`Tổng số bài viết phát hiện: ${this.state.postsCount}`);
     this.addLog(`Tổng số video phát hiện: ${this.state.videosCount}`);
     this.addLog(`Tổng số bài viết/video thu thập: ${this.state.matchedCount}`);
+  }
+
+  /**
+   * BƯỚC 1: Thu thập toàn bộ đường link và phân loại cơ bản từ trang cá nhân / fanpage.
+   * Chỉ lấy link và loại (Video / Hình ảnh / Bài viết), không đọc tương tác hay caption trên DOM.
+   */
+  public async extractTimelineLinksAndTypes(
+    page: Page
+  ): Promise<Array<{ url: string; loai: string; hasImage: boolean; hasVideo: boolean }>> {
+    try {
+      return await page.evaluate(() => {
+        const results: Array<{ url: string; loai: string; hasImage: boolean; hasVideo: boolean }> = [];
+        const seenUrls = new Set<string>();
+
+        function cleanFbUrl(href: string): { url: string; loai: string } | null {
+          if (!href) return null;
+          let h = href.trim();
+          if (h.startsWith('/')) {
+            h = 'https://www.facebook.com' + h;
+          }
+          if (!h.includes('facebook.com')) return null;
+
+          // Loại trừ link rác, link điều hướng và link chia sẻ
+          if (
+            h.includes('/login') ||
+            h.includes('/sharer.php') ||
+            h.includes('/recover/') ||
+            h.includes('/messages/') ||
+            h.includes('/friends/') ||
+            h.includes('/notifications') ||
+            h.includes('/about/') ||
+            h.includes('/privacy') ||
+            h.includes('/hashtag/') ||
+            h.includes('comment_id=') ||
+            h.includes('help.facebook.com')
+          ) {
+            return null;
+          }
+
+          // 1. Reel
+          if (h.includes('/reel/') || h.includes('/reels/')) {
+            const m = h.match(/\/reels?\/([a-zA-Z0-9_-]+)/);
+            if (m && m[1] !== 'watch' && m[1] !== 'videos') {
+              return { url: `https://www.facebook.com/reel/${m[1]}`, loai: 'Video' };
+            }
+          }
+
+          // 2. Videos / Watch
+          if (h.includes('/videos/') || h.includes('/watch')) {
+            const mV = h.match(/(?:videos\/|\?v=)(\d+)/);
+            if (mV) {
+              return { url: `https://www.facebook.com/watch/?v=${mV[1]}`, loai: 'Video' };
+            }
+            return { url: h.split('?')[0].split('#')[0], loai: 'Video' };
+          }
+
+          // 3. Posts (/posts/...)
+          if (h.includes('/posts/')) {
+            const m = h.match(/\/posts\/([a-zA-Z0-9_-]+)/);
+            if (m) {
+              const base = h.split('?')[0].split('#')[0];
+              return { url: base, loai: 'Bài viết' };
+            }
+          }
+
+          // 4. Permalink / story query (permalink.php, story.php)
+          if (h.includes('permalink.php') || h.includes('story.php')) {
+            try {
+              const u = new URL(h);
+              const sf = u.searchParams.get('story_fbid') || u.searchParams.get('fbid');
+              const id = u.searchParams.get('id');
+              if (sf && id) {
+                return {
+                  url: `https://www.facebook.com/permalink.php?story_fbid=${sf}&id=${id}`,
+                  loai: 'Bài viết',
+                };
+              }
+              if (sf) {
+                return {
+                  url: `https://www.facebook.com/permalink.php?story_fbid=${sf}`,
+                  loai: 'Bài viết',
+                };
+              }
+            } catch {}
+          }
+
+          // 5. Nếu link ảnh chứa set=pcb.<postId> -> Chuyển thành link bài viết permalink.php, TUYỆT ĐỐI không lấy link photo
+          if (h.includes('set=pcb.')) {
+            const mPcb = h.match(/set=pcb\.(\d+)/);
+            if (mPcb) {
+              return {
+                url: `https://www.facebook.com/permalink.php?story_fbid=${mPcb[1]}`,
+                loai: 'Bài viết',
+              };
+            }
+          }
+
+          // BỎ TOÀN BỘ link ảnh /photo/, /photos/, photo.php
+          return null;
+        }
+
+        // Quét từng bài viết (card) trên dòng thời gian
+        let articles = Array.from(document.querySelectorAll('div[role="article"]'));
+        if (articles.length === 0) {
+          articles = Array.from(
+            document.querySelectorAll('div[data-pagelet*="FeedUnit_"], div[data-pagelet*="ProfileTimeline"]')
+          );
+        }
+
+        for (const art of articles) {
+          // Thẻ video thực sự trong bài viết (thẻ video HTML5, data-video-id, hoặc link reel/watch/videos)
+          const hasVideoTag = Boolean(
+            art.querySelector('video') ||
+            art.querySelector('div[data-video-id]') ||
+            art.querySelector('a[href*="/reel/"], a[href*="/reels/"], a[href*="/watch"], a[href*="/videos/"]')
+          );
+
+          // Thẻ hình ảnh nội dung thật trong bài viết (loại trừ emoji và avatar nhỏ <= 50px)
+          const contentImgs = Array.from(art.querySelectorAll('img')).filter((img) => {
+            const src = img.getAttribute('src') || '';
+            const w = img.width || img.naturalWidth || 0;
+            const h = img.height || img.naturalHeight || 0;
+            if (src.includes('/emoji.php') || src.includes('/rsrc.php')) return false;
+            return (src.includes('scontent') || src.includes('fbcdn')) && (w >= 80 || h >= 80);
+          });
+
+          const contentImgDivs = Array.from(art.querySelectorAll('div[role="img"]')).filter((d) => {
+            const aria = (d.getAttribute('aria-label') || '').toLowerCase();
+            return !aria.includes('thích') && !aria.includes('like') && !aria.includes('bình luận') && !aria.includes('chia sẻ');
+          });
+
+          const hasImageTag = contentImgs.length > 0 || contentImgDivs.length > 0;
+          const anchors = Array.from(art.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+
+          // Ưu tiên 1: Link thời gian đăng bài (timestamp permalink của bài viết)
+          const timeAnchor = anchors.find((a) => {
+            const aria = a.getAttribute('aria-label') || '';
+            const t = a.innerText.trim();
+            const hasTimeMarker =
+              /\d|vừa|just|hôm qua|yesterday/i.test(aria) ||
+              (t.length <= 30 && /\d|vừa|just|hôm qua|yesterday/i.test(t));
+            return hasTimeMarker && !a.href.includes('profile.php?id=');
+          });
+
+          let chosenItem: { url: string; loai: string } | null = null;
+          if (timeAnchor) {
+            chosenItem = cleanFbUrl(timeAnchor.href);
+          }
+
+          // Ưu tiên 2: Nếu thẻ thời gian không ra link hợp lệ, tìm link post/video/reel đầu tiên trong bài
+          if (!chosenItem) {
+            for (const a of anchors) {
+              const item = cleanFbUrl(a.href);
+              if (item) {
+                chosenItem = item;
+                break;
+              }
+            }
+          }
+
+          if (chosenItem && !seenUrls.has(chosenItem.url)) {
+            seenUrls.add(chosenItem.url);
+            results.push({
+              url: chosenItem.url,
+              loai: hasVideoTag ? 'Video' : hasImageTag ? 'Hình ảnh' : 'Bài viết',
+              hasImage: hasImageTag,
+              hasVideo: hasVideoTag,
+            });
+          }
+        }
+
+        return results;
+      });
+    } catch {
+      return [];
+    }
   }
 
   private async checkIfBlocked(page: Page, response: any): Promise<boolean> {

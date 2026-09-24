@@ -18,8 +18,6 @@ import {
   FileText,
   Layers,
   Check,
-  Repeat,
-  Sparkles,
 } from "lucide-react";
 import { BatchProgress, VideoItem } from "../types/video";
 import { formatNumber } from "../utils/formatters";
@@ -652,25 +650,6 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                           {v.link.replace(/^https?:\/\/(www\.)?/, "")}
                         </span>
                       </a>
-
-                      {/* Link bài gốc nếu là bài chia sẻ */}
-                      {v.isShared && v.originalPostUrl && (
-                        <div className="mt-1 w-full min-w-0 overflow-hidden">
-                          <a
-                            href={v.originalPostUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[10px] text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 inline-flex items-center gap-1 font-normal hover:underline w-full min-w-0"
-                            title={`Bài viết gốc: ${v.originalPostUrl}`}
-                          >
-                            <Repeat className="w-2.5 h-2.5 shrink-0" />
-                            <span className="truncate flex-1 min-w-0 block">
-                              Gốc: {v.originalPostUrl.replace(/^https?:\/\/(www\.)?/, "")}
-                            </span>
-                            <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                          </a>
-                        </div>
-                      )}
                     </div>
                   </td>
 
@@ -711,19 +690,6 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                         )}
                         <span>{isFB ? "Facebook" : "TikTok"}</span>
                       </span>
-
-                      {/* Badge Nguồn gốc: Bài gốc hay Chia sẻ */}
-                      {v.isShared ? (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
-                          <Repeat className="w-2.5 h-2.5 shrink-0" />
-                          <span>Chia sẻ</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
-                          <Sparkles className="w-2.5 h-2.5 shrink-0" />
-                          <span>Bài gốc</span>
-                        </span>
-                      )}
                     </div>
                   </td>
 
@@ -736,25 +702,6 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                       <div className="truncate w-full min-w-0 block" title={v.nguoiDang || "N/A"}>
                         {v.nguoiDang || "N/A"}
                       </div>
-                      {v.isShared && v.originalAuthor && (
-                        <div className="text-[10px] text-amber-600 dark:text-amber-400/90 truncate w-full min-w-0 flex items-center gap-0.5 mt-0.5 font-normal">
-                          <Repeat className="w-2.5 h-2.5 shrink-0" />
-                          {v.originalPostUrl ? (
-                            <a
-                              href={v.originalPostUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="hover:underline truncate flex-1 min-w-0 inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400 font-medium"
-                              title={`Mở bài gốc: ${v.originalPostUrl}`}
-                            >
-                              <span className="truncate flex-1 min-w-0 block">Gốc: {v.originalAuthor}</span>
-                              <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                            </a>
-                          ) : (
-                            <span className="truncate flex-1 min-w-0 block">Gốc: {v.originalAuthor}</span>
-                          )}
-                        </div>
-                      )}
                     </div>
                   </td>
 

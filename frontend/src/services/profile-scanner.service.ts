@@ -36,7 +36,10 @@ export const profileScannerApi = {
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify(params),
     });
-    if (!res.ok) throw new Error('Lỗi khi khởi chạy tiến trình quét');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Lỗi khi khởi chạy tiến trình quét');
+    }
     return res.json();
   },
 

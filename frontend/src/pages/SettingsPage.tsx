@@ -4,7 +4,7 @@ import {
   Moon,
   Sun,
   Clock,
-  Radio,
+  Cpu,
   Database,
   Download,
   Upload,
@@ -22,17 +22,20 @@ import { Toast } from '../components/Toast';
 import { ToastItem } from '../types/video';
 
 interface SettingsPageProps {
-  isConnected: boolean;
+  isConnected?: boolean;
 }
 
-export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
+export const SettingsPage: React.FC<SettingsPageProps> = () => {
   const { theme, toggleTheme } = useTheme();
   const { isAdmin } = useAuth();
 
   const [settings, setSettings] = useState<SystemSettingsData | null>(null);
   const [intervalMinutes, setIntervalMinutes] = useState<number>(3);
+  const [concurrencyMode, setConcurrencyMode] = useState<'custom' | 'max'>('custom');
+  const [concurrencyCount, setConcurrencyCount] = useState<number>(5);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSavingInterval, setIsSavingInterval] = useState<boolean>(false);
+  const [isSavingConcurrency, setIsSavingConcurrency] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [isImporting, setIsImporting] = useState<boolean>(false);
 
@@ -55,6 +58,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
       const data = await settingsApi.getSettings();
       setSettings(data);
       setIntervalMinutes(data.autoRefreshMinutes || 3);
+      if (data.concurrency) {
+        setConcurrencyMode(data.concurrency.mode || 'custom');
+        setConcurrencyCount(data.concurrency.count || 5);
+      }
     } catch (err: any) {
       showToast(err.message || 'Không thể tải cài đặt hệ thống', 'error');
     } finally {
@@ -68,7 +75,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
 
   const handleSaveInterval = async () => {
     if (intervalMinutes < 3) {
-      showToast('Chu kỳ quét tự động tối thiểu là 3 phút!', 'error');
+      showToast('Chu kỳ quét tối thiểu là 3 phút!', 'error');
       return;
     }
 
@@ -81,6 +88,24 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
       showToast(err.message || 'Lỗi khi lưu chu kỳ quét', 'error');
     } finally {
       setIsSavingInterval(false);
+    }
+  };
+
+  const handleSaveConcurrency = async () => {
+    if (concurrencyMode === 'custom' && (!concurrencyCount || concurrencyCount < 1)) {
+      showToast('Số lượng luồng quét tối thiểu là 1!', 'error');
+      return;
+    }
+
+    try {
+      setIsSavingConcurrency(true);
+      const res = await settingsApi.updateConcurrency(concurrencyMode, concurrencyCount);
+      showToast(res.message || 'Đã cập nhật số lượng luồng quét!', 'success');
+      loadSettings();
+    } catch (err: any) {
+      showToast(err.message || 'Lỗi khi lưu số lượng luồng quét', 'error');
+    } finally {
+      setIsSavingConcurrency(false);
     }
   };
 
@@ -150,7 +175,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white">Cài Đặt Hệ Thống</h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Cấu hình chu kỳ tự động quét video, quản lý sao lưu / khôi phục cơ sở dữ liệu SQLite và trạng thái hệ thống
+                Cấu hình chu kỳ quét, số lượng luồng quét và quản lý sao lưu / khôi phục cơ sở dữ liệu SQLite
               </p>
             </div>
           </div>
@@ -202,7 +227,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
           <div className="max-w-xl">
             <div className="font-semibold text-sm text-slate-900 dark:text-white flex items-center gap-2">
               <Clock className="w-4 h-4 text-blue-500" />
-              Chu Kỳ Tự Động Quét Video
+              Chu kỳ quét
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               Hệ thống tự động kích hoạt worker chạy ngầm cập nhật lại số liệu tương tác (Like, Share, Cmt, View) của toàn bộ danh sách video. Yêu cầu tối thiểu <span className="font-bold text-blue-600 dark:text-blue-400">≥ 3 phút</span>.
@@ -239,6 +264,83 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
                   <Save className="w-3.5 h-3.5" />
                 )}
                 <span>Lưu chu kỳ</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 3. Concurrency Settings */}
+        <div className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="max-w-xl">
+            <div className="font-semibold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-purple-500" />
+              Số lượng luồng quét
+            </div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Số lượng luồng cào song song khi quét hoặc làm mới dữ liệu. Chọn số lượng cụ thể (mặc định là 5) hoặc quét tối đa tất cả cùng lúc.
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 shrink-0">
+            <div className="flex items-center gap-5">
+              {/* Lựa chọn 1: Số lượng */}
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="radio"
+                  name="concurrencyMode"
+                  checked={concurrencyMode === 'custom'}
+                  disabled={!isAdmin || isSavingConcurrency}
+                  onChange={() => setConcurrencyMode('custom')}
+                  className="w-4 h-4 text-blue-600 focus:ring-blue-500 border-slate-300 dark:border-slate-700 cursor-pointer"
+                />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Số lượng:
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  step={1}
+                  value={concurrencyCount}
+                  disabled={!isAdmin || concurrencyMode !== 'custom' || isSavingConcurrency}
+                  onChange={(e) => setConcurrencyCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-16 px-2.5 py-1.5 text-center text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50"
+                />
+              </label>
+
+              {/* Lựa chọn 2: Tối đa */}
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="radio"
+                  name="concurrencyMode"
+                  checked={concurrencyMode === 'max'}
+                  disabled={!isAdmin || isSavingConcurrency}
+                  onChange={() => setConcurrencyMode('max')}
+                  className="w-4 h-4 text-blue-600 focus:ring-blue-500 border-slate-300 dark:border-slate-700 cursor-pointer"
+                />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Tối đa
+                </span>
+              </label>
+            </div>
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={handleSaveConcurrency}
+                disabled={
+                  isSavingConcurrency ||
+                  (concurrencyMode === (settings?.concurrency?.mode || 'custom') &&
+                    (concurrencyMode === 'max' || concurrencyCount === (settings?.concurrency?.count || 5)))
+                }
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isSavingConcurrency ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                <span>Lưu luồng</span>
               </button>
             )}
           </div>
@@ -350,29 +452,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ isConnected }) => {
               </span>
             </div>
           )}
-        </div>
-
-        {/* 4. Socket Realtime Status */}
-        <div className="p-5 flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <div className="font-semibold text-sm text-slate-900 dark:text-white flex items-center gap-2">
-              <Radio className="w-4 h-4 text-emerald-500" />
-              Kết Nối WebSocket Realtime
-            </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Đồng bộ dữ liệu trực tiếp khi worker hoàn thành cào từng video hoặc quét profile
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span
-              className={`w-2.5 h-2.5 rounded-full ${
-                isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
-              }`}
-            />
-            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              {isConnected ? 'Đang kết nối Realtime' : 'Mất kết nối máy chủ'}
-            </span>
-          </div>
         </div>
       </div>
     </div>

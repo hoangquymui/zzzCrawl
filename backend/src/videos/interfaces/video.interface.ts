@@ -14,6 +14,7 @@ export interface VideoItem {
   lastUpdated?: string;
   postId?: string;
   isShared?: boolean;
+  hasImage?: boolean;
   originalAuthor?: string;
   originalAuthorUrl?: string;
   originalPostUrl?: string;

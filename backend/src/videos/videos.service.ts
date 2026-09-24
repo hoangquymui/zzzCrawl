@@ -13,6 +13,7 @@ import { StorageService } from './storage.service';
 import { ScraperService } from './scraper.service';
 import { VideosGateway } from './videos.gateway';
 import { DatabaseService } from '../database/database.service';
+import { CookieService } from './cookie.service';
 
 @Injectable()
 export class VideosService implements OnModuleInit, OnModuleDestroy {
@@ -21,13 +22,16 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
   private isRefreshingAll = false;
   private autoRefreshTimer: NodeJS.Timeout | null = null;
   private autoRefreshMinutes = 3;
+  private concurrencyMode: 'custom' | 'max' = 'custom';
+  private concurrencyCount = 5;
 
   constructor(
     private readonly storageService: StorageService,
     private readonly scraperService: ScraperService,
     @Inject(forwardRef(() => VideosGateway))
     private readonly videosGateway: VideosGateway,
-    private readonly db: DatabaseService
+    private readonly db: DatabaseService,
+    private readonly cookieService: CookieService
   ) {}
 
   public onModuleInit(): void {
@@ -62,6 +66,14 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     const saved = this.db.getSetting('auto_refresh_minutes');
     const parsed = saved ? parseInt(saved, 10) : 3;
     this.autoRefreshMinutes = !isNaN(parsed) && parsed >= 3 ? parsed : 3;
+
+    const savedMode = this.db.getSetting('crawl_concurrency_mode');
+    this.concurrencyMode = savedMode === 'max' ? 'max' : 'custom';
+
+    const savedCount = this.db.getSetting('crawl_concurrency_count');
+    const parsedCount = savedCount ? parseInt(savedCount, 10) : 5;
+    this.concurrencyCount = !isNaN(parsedCount) && parsedCount >= 1 ? parsedCount : 5;
+
     this.startAutoRefreshTimer();
   }
 
@@ -79,6 +91,11 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     }
 
     const cleanUrl = this.scraperService.sanitizeUrl(rawUrl);
+    const isFacebook = cleanUrl.includes('facebook.com') || cleanUrl.includes('fb.watch');
+    if (isFacebook) {
+      await this.cookieService.validateCookieForCrawl();
+    }
+
     // 1. Kiểm tra nhanh theo URL đã làm sạch
     const existingByUrl = this.trackedVideos.find((v) => v.link === cleanUrl);
     if (existingByUrl) {
@@ -163,6 +180,11 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException('Không tìm thấy video');
     }
 
+    const isFacebook = video.link.includes('facebook.com') || video.link.includes('fb.watch');
+    if (isFacebook) {
+      await this.cookieService.validateCookieForCrawl();
+    }
+
     this.videosGateway.emitCrawlStatus(`Đang cập nhật video STT ${stt}...`, video.link);
 
     const freshData = await this.scraperService.scrapeVideo(video.link, stt);
@@ -201,22 +223,42 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
 
   public async refreshAllVideosBatch(
     source = 'Thủ công',
-    customConcurrency: string | number = 'all'
+    customConcurrency: string | number = 'default'
   ): Promise<{ total: number; concurrency: number }> {
     if (this.isRefreshingAll || this.trackedVideos.length === 0) {
       return { total: this.trackedVideos.length, concurrency: 0 };
+    }
+
+    const hasFbVideos = this.trackedVideos.some(
+      (v) => v.link.includes('facebook.com') || v.link.includes('fb.watch')
+    );
+    if (hasFbVideos) {
+      try {
+        await this.cookieService.validateCookieForCrawl();
+      } catch (err: any) {
+        this.logger.error(`[Làm mới đồng loạt] Cookie hết hạn!`);
+        this.videosGateway.emitCrawlStatus('Lỗi: Cookie hết hạn', '');
+        throw new BadRequestException('Cookie hết hạn');
+      }
     }
 
     this.isRefreshingAll = true;
     const total = this.trackedVideos.length;
 
     let concurrency = total;
+    const effectiveConcurrency =
+      customConcurrency === 'default'
+        ? this.concurrencyMode === 'max'
+          ? 'all'
+          : this.concurrencyCount
+        : customConcurrency;
+
     if (
-      customConcurrency !== 'all' &&
-      customConcurrency !== 'max' &&
-      Number(customConcurrency) > 0
+      effectiveConcurrency !== 'all' &&
+      effectiveConcurrency !== 'max' &&
+      Number(effectiveConcurrency) > 0
     ) {
-      concurrency = parseInt(String(customConcurrency), 10);
+      concurrency = Math.min(total, parseInt(String(effectiveConcurrency), 10));
     }
 
     this.logger.log(
@@ -321,10 +363,34 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  public getConcurrencySettings(): { mode: 'custom' | 'max'; count: number } {
+    return {
+      mode: this.concurrencyMode,
+      count: this.concurrencyCount,
+    };
+  }
+
+  public setConcurrencySettings(mode: 'custom' | 'max', count?: number): void {
+    if (mode !== 'custom' && mode !== 'max') {
+      throw new BadRequestException('Chế độ luồng quét không hợp lệ!');
+    }
+    this.concurrencyMode = mode;
+    this.db.setSetting('crawl_concurrency_mode', mode);
+
+    if (count !== undefined && count !== null) {
+      if (count < 1) {
+        throw new BadRequestException('Số lượng luồng quét phải lớn hơn hoặc bằng 1!');
+      }
+      this.concurrencyCount = count;
+      this.db.setSetting('crawl_concurrency_count', String(count));
+    }
+    this.logger.log(`[Cấu hình] Đã cập nhật luồng quét: mode=${this.concurrencyMode}, count=${this.concurrencyCount}`);
+  }
+
   public handleAutoRefresh(): void {
     if (this.trackedVideos.length > 0 && !this.isRefreshingAll) {
       this.logger.log(`[Tự động] Kích hoạt làm mới video định kỳ (chu kỳ ${this.autoRefreshMinutes} phút)...`);
-      this.refreshAllVideosBatch('Tự động định kỳ', 'all');
+      this.refreshAllVideosBatch('Tự động định kỳ', 'default');
     }
   }
 

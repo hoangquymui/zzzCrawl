@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { chromium } from 'playwright';
@@ -487,6 +487,37 @@ export class CookieService implements OnModuleInit {
       if (browser) {
         await browser.close().catch(() => {});
       }
+    }
+  }
+
+  /**
+   * Tự động kiểm tra cookie trước khi crawl.
+   * Nếu không có cookie hoặc cookie hết hạn / lỗi, ném lỗi BadRequestException('Cookie hết hạn').
+   */
+  public async validateCookieForCrawl(force = false): Promise<void> {
+    const cookies = this.loadCookies();
+    if (!cookies || cookies.length === 0) {
+      throw new BadRequestException('Cookie hết hạn');
+    }
+
+    const cUser = cookies.find((c) => c.name === 'c_user')?.value;
+    const xs = cookies.find((c) => c.name === 'xs')?.value;
+    if (!cUser || !xs) {
+      throw new BadRequestException('Cookie hết hạn');
+    }
+
+    const last = this.lastCheckResult || this.db.getCookieLastCheck();
+    if (!force && last && last.checkedAt && last.isValid) {
+      const ageMs = Date.now() - new Date(last.checkedAt).getTime();
+      // Nếu đã kiểm tra hợp lệ trong vòng 60 giây qua thì tiếp tục
+      if (ageMs < 60000) {
+        return;
+      }
+    }
+
+    const result = await this.checkCookieValidity();
+    if (!result || !result.isValid) {
+      throw new BadRequestException('Cookie hết hạn');
     }
   }
 }

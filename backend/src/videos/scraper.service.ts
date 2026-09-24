@@ -387,7 +387,24 @@ export class ScraperService {
    */
   public async scrapeFacebookHttp(url: string, stt: number = 1): Promise<VideoItem> {
     const cleanUrl = this.sanitizeUrl(url);
-    const res = await fetch(cleanUrl, { headers: this.fbHeaders, redirect: 'follow' });
+
+    let reqHeaders: Record<string, string> = { ...this.fbHeaders };
+    try {
+      if (this.cookieService) {
+        const cookies = this.cookieService.loadCookies();
+        if (Array.isArray(cookies) && cookies.length > 0) {
+          const cookieStr = cookies
+            .filter((c) => c && c.name && c.value)
+            .map((c) => `${c.name}=${c.value}`)
+            .join('; ');
+          if (cookieStr) {
+            reqHeaders['Cookie'] = cookieStr;
+          }
+        }
+      }
+    } catch {}
+
+    const res = await fetch(cleanUrl, { headers: reqHeaders, redirect: 'follow' });
     const finalHttpUrl = res.url ? this.sanitizeUrl(res.url) : cleanUrl;
     const html = await res.text();
     let result = await this.parseFacebookHtml(html, finalHttpUrl, stt);
@@ -845,86 +862,31 @@ export class ScraperService {
       result.postId = mPostId[1];
     }
 
-    // 6. Phát hiện bài viết chia sẻ lại (shared/repost)
-    this.detectSharedPost(html, result);
+    // Kiểm tra bài viết có hình ảnh đính kèm hay không
+    const hasPhotoAttachment =
+      html.includes('"all_subattachments"') ||
+      html.includes('"subattachments"') ||
+      html.includes('"__typename":"Photo"') ||
+      html.includes('"photo_id"') ||
+      html.includes('/photo/') ||
+      html.includes('/photos/') ||
+      html.includes('photo.php');
+    result.hasImage = hasPhotoAttachment;
+
+    // Phân loại chuẩn xác theo quy tắc:
+    // - Nếu có mắt xem hoặc link là reel/watch/videos -> Facebook Video / Facebook Reel
+    // - Nếu không có mắt xem: có ảnh -> Facebook Photo, không có ảnh/video -> Facebook Post
+    if (isReel) {
+      result.loai = 'Facebook Reel';
+    } else if (result.LuotXem > 0 || effectiveUrl.includes('/videos/') || effectiveUrl.includes('/watch')) {
+      result.loai = 'Facebook Video';
+    } else if (hasPhotoAttachment || isPhoto) {
+      result.loai = 'Facebook Photo';
+    } else {
+      result.loai = 'Facebook Post';
+    }
 
     return result;
-  }
-
-  /**
-   * Phát hiện bài viết được chia sẻ lại từ người khác.
-   * Kết hợp nhiều phương pháp: GraphQL JSON, so sánh tác giả, text matching.
-   */
-  private detectSharedPost(html: string, result: VideoItem): void {
-    // Phương pháp 1: GraphQL JSON — tìm "attached_story" (bài gốc được nhúng trong bài share)
-    const mAttachedStory = html.match(
-      /"attached_story":\s*\{[^]*?"actors":\s*\[\s*\{[^}]*"name":\s*"([^"]+)"[^}]*?"url":\s*"([^"]+)"/
-    );
-
-    if (mAttachedStory) {
-      result.isShared = true;
-      result.originalAuthor = this.unescapeHtml(mAttachedStory[1]);
-      result.originalAuthorUrl = mAttachedStory[2].replace(/\\\//g, '/');
-    }
-
-    // Phương pháp 2: So sánh video_owner với actors — nếu khác tên → người share ≠ người tạo video
-    if (!result.isShared && result.nguoiDang) {
-      const mVideoOwner =
-        html.match(/"video_owner":\s*\{[^}]*"name":\s*"([^"]+)"/) ||
-        html.match(/"owner_as_page":\s*\{\s*"name":\s*"([^"]+)"/);
-      if (mVideoOwner) {
-        const videoOwnerName = this.unescapeHtml(mVideoOwner[1]);
-        if (videoOwnerName && videoOwnerName !== result.nguoiDang) {
-          result.isShared = true;
-          result.originalAuthor = videoOwnerName;
-        }
-      }
-    }
-
-    // Phương pháp 3: Text matching trong HTML (đa ngôn ngữ)
-    if (!result.isShared) {
-      const sharePatterns = [
-        // Tiếng Việt
-        /đã chia sẻ một/i,
-        /đã chia sẻ bài viết/i,
-        /đã chia sẻ một video/i,
-        /Chia sẻ lại Reels/i,
-        // Tiếng Anh
-        /shared a\s+(?:post|video|reel|link)/i,
-        /Shared Reels/i,
-        // Trong Relay GraphQL JSON
-        /"text":\s*"[^"]*(?:đã chia sẻ|shared\s+a)[^"]*"/i,
-      ];
-
-      for (const pattern of sharePatterns) {
-        if (pattern.test(html)) {
-          result.isShared = true;
-          break;
-        }
-      }
-    }
-
-    // Nếu đã xác định là shared, thử lấy URL bài gốc
-    if (result.isShared && !result.originalPostUrl) {
-      const mOriginalUrl =
-        html.match(/"attached_story"[^]*?"(?:permalink_url|url)":\s*"(https?:[^\s"\\]*(?:\\\/[^\s"\\]*)*)"/i) ||
-        html.match(/"attachments"[^]*?"(?:permalink_url|url)":\s*"(https?:[^\s"\\]*(?:\\\/[^\s"\\]*)*)"/i) ||
-        html.match(/"attached_story"[^]*?"url":\s*"(https?:[^"]*\/(?:reel|videos)\/\d+[^"]*)"/i) ||
-        html.match(/"attachments"[^]*?"url":\s*"(https?:[^"]*\/(?:reel|videos)\/\d+[^"]*)"/i);
-      if (mOriginalUrl) {
-        result.originalPostUrl = this.sanitizeUrl(mOriginalUrl[1].replace(/\\\//g, '/'));
-      }
-    }
-
-    // Nếu đã phát hiện shared nhưng chưa có originalAuthorUrl, thử tìm từ các pattern khác
-    if (result.isShared && result.originalAuthor && !result.originalAuthorUrl) {
-      const mOwnerUrl =
-        html.match(/"video_owner":\s*\{[^}]*"url":\s*"([^"]+)"/) ||
-        html.match(/"owner_as_page":\s*\{[^}]*"url":\s*"([^"]+)"/);
-      if (mOwnerUrl) {
-        result.originalAuthorUrl = mOwnerUrl[1].replace(/\\\//g, '/');
-      }
-    }
   }
 
   /**

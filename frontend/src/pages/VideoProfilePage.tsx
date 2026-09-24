@@ -215,7 +215,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     e.preventDefault();
 
     if (cookieCount === 0) {
-      showToast('Chưa nạp cookie! Vui lòng vào mục Cookie để nạp cookie trước khi quét.', 'error');
+      showToast('Cookie hết hạn', 'error');
       return;
     }
 
@@ -262,7 +262,9 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
         endDate: endDate || undefined,
       });
     } catch (err: any) {
-      alert(`Không thể bắt đầu quét: ${err.message}`);
+      const msg = err.message || 'Lỗi khi bắt đầu quét';
+      showToast(msg, 'error');
+      setLogs((prev) => [...prev, `[LỖI] ${msg}`]);
       setStatus('ERROR');
     }
   };
@@ -322,15 +324,15 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
   };
 
   // Quick add to Video Tracker
-  const handleAddToTracker = async (post: ScannedPostItem & { isChild?: boolean }) => {
-    const isPostShared = post.isShared || post.postType === 'Chia sẻ';
-    const url = isPostShared
-      ? (post.postUrl && post.postUrl !== 'N/A' ? post.postUrl : post.reelUrl)
-      : (post.reelUrl && post.reelUrl !== 'N/A'
+  const handleAddToTracker = async (post: ScannedPostItem) => {
+    const url =
+      post.postUrl && post.postUrl !== 'N/A'
+        ? post.postUrl
+        : post.reelUrl && post.reelUrl !== 'N/A'
         ? post.reelUrl
         : post.videoUrl && post.videoUrl !== 'N/A'
         ? post.videoUrl
-        : post.postUrl);
+        : '';
     if (!url || url === 'N/A') {
       showToast('Bài viết này chưa có link hợp lệ để theo dõi!', 'error');
       return;
@@ -338,15 +340,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
 
     // Kiểm tra trùng lặp với danh sách Video Tracker
     const isAlreadyTracked = videos.some((v) => {
-      if (isPostShared) {
-        // Bài chia sẻ: CHỈ coi là đã thêm nếu chính link permalink của nó đã có trong danh sách
-        return Boolean(
-          post.postUrl &&
-          post.postUrl !== 'N/A' &&
-          (v.link === post.postUrl || (v.postId && (post.postUrl.includes('/' + v.postId) || post.postUrl.includes('=' + v.postId))))
-        );
-      }
-
       if (url && v.link === url) return true;
       if (post.reelUrl && v.link === post.reelUrl) return true;
       if (post.postUrl && v.link === post.postUrl) return true;
@@ -384,130 +377,18 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     groupKey: string;
   }
 
-  // Nhóm bài viết theo video: Nếu có bài gốc FB Reel, bài gốc đứng trước (STT N), các bài chia sẻ cùng video thụt lề con (STT N.1, N.2...)
-  // Nếu bài chia sẻ độc lập (không có bài gốc trên timeline này), hiển thị tuần tự theo dòng thời gian với STT N
+  // Danh sách bài viết phẳng, mỗi bài có STT tuần tự
   const getGroupedPosts = (posts: ScannedPostItem[]): GroupedScannedItem[] => {
-    const isSharedPost = (p: ScannedPostItem) => Boolean(p.isShared || p.postType === 'Chia sẻ');
-
-    const visited = new Set<string>();
-    const orderedList: GroupedScannedItem[] = [];
-    let groupNumber = 1;
-
-    posts.forEach((post) => {
-      if (visited.has(post.id)) return;
-
-      const isShared = isSharedPost(post);
-      const videoKey = (post.videoId && post.videoId !== 'N/A') ? post.videoId : '';
-
-      if (!isShared) {
-        // 1. Bài gốc (FB Reel)
-        visited.add(post.id);
-        const groupKey = videoKey || post.reelUrl || post.postUrl || post.id;
-        orderedList.push({
-          ...post,
-          isChild: false,
-          sttDisplay: `${groupNumber}`,
-          groupKey,
-        });
-
-        // Tìm các bài chia sẻ con cùng video trên timeline
-        if (videoKey) {
-          let childIdx = 1;
-          posts.forEach((other) => {
-            if (!visited.has(other.id) && isSharedPost(other) && other.videoId === videoKey) {
-              visited.add(other.id);
-              orderedList.push({
-                ...other,
-                isChild: true,
-                sttDisplay: `${groupNumber}.${childIdx}`,
-                groupKey,
-              });
-              childIdx++;
-            }
-          });
-        }
-
-        groupNumber++;
-      } else {
-        // 2. Bài chia sẻ (Nếu video gốc có xuất hiện trên timeline thì tìm ghép, nếu không thì hiển thị độc lập)
-        const parentPost = videoKey
-          ? posts.find((p) => !visited.has(p.id) && !isSharedPost(p) && p.videoId === videoKey)
-          : null;
-
-        if (parentPost) {
-          // Xuất hiện bài gốc: Đưa bài gốc lên trước
-          visited.add(parentPost.id);
-          const groupKey = videoKey || parentPost.id;
-          orderedList.push({
-            ...parentPost,
-            isChild: false,
-            sttDisplay: `${groupNumber}`,
-            groupKey,
-          });
-
-          // Đưa bài chia sẻ này và các bài chia sẻ cùng video khác làm cấp con
-          visited.add(post.id);
-          orderedList.push({
-            ...post,
-            isChild: true,
-            sttDisplay: `${groupNumber}.1`,
-            groupKey,
-          });
-
-          let childIdx = 2;
-          posts.forEach((other) => {
-            if (!visited.has(other.id) && isSharedPost(other) && other.videoId === videoKey) {
-              visited.add(other.id);
-              orderedList.push({
-                ...other,
-                isChild: true,
-                sttDisplay: `${groupNumber}.${childIdx}`,
-                groupKey,
-              });
-              childIdx++;
-            }
-          });
-
-          groupNumber++;
-        } else {
-          // Bài chia sẻ độc lập (share từ page khác/người khác, không có bài gốc của profile này)
-          visited.add(post.id);
-          const groupKey = videoKey || post.id;
-          orderedList.push({
-            ...post,
-            isChild: false,
-            sttDisplay: `${groupNumber}`,
-            groupKey,
-          });
-
-          // Nếu có bài chia sẻ thứ 2 cùng chia sẻ 1 video ngoại này
-          if (videoKey) {
-            let childIdx = 1;
-            posts.forEach((other) => {
-              if (!visited.has(other.id) && isSharedPost(other) && other.videoId === videoKey) {
-                visited.add(other.id);
-                orderedList.push({
-                  ...other,
-                  isChild: true,
-                  sttDisplay: `${groupNumber}.${childIdx}`,
-                  groupKey,
-                });
-                childIdx++;
-              }
-            });
-          }
-
-          groupNumber++;
-        }
-      }
-    });
-
-    return orderedList;
+    return posts.map((post, idx) => ({
+      ...post,
+      isChild: false,
+      sttDisplay: `${idx + 1}`,
+      groupKey: post.id || post.postUrl || String(idx),
+    }));
   };
 
-  // Phân loại hiển thị: ưu tiên trường loai mới, fallback cho dữ liệu quét cũ (FB Reel → Video)
+  // Phân loại hiển thị
   const getPostLoai = (p: ScannedPostItem): string => {
-    if (p.isShared || p.postType === 'Chia sẻ') return 'Chia sẻ';
     if (p.loai) return p.loai;
     return p.hasVideo ? 'Video' : 'Bài viết';
   };
@@ -518,7 +399,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     Video: foundPosts.filter((p) => getPostLoai(p) === 'Video').length,
     'Hình ảnh': foundPosts.filter((p) => getPostLoai(p) === 'Hình ảnh').length,
     'Bài viết': foundPosts.filter((p) => getPostLoai(p) === 'Bài viết').length,
-    'Chia sẻ': foundPosts.filter((p) => getPostLoai(p) === 'Chia sẻ').length,
   };
 
   // Filtered posts (by search term and type)
@@ -1041,21 +921,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                     {typeCounts['Bài viết']}
                   </span>
                 </button>
-
-                <button
-                  type="button"
-                  onClick={() => setTypeFilter('Chia sẻ')}
-                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer flex items-center gap-1.5 ${
-                    typeFilter === 'Chia sẻ'
-                      ? 'bg-white dark:bg-slate-900 text-purple-600 dark:text-purple-400 shadow-xs font-bold'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <span>Chia sẻ</span>
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 font-mono font-semibold">
-                    {typeCounts['Chia sẻ']}
-                  </span>
-                </button>
               </div>
             )}
           </div>
@@ -1141,7 +1006,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                 </tr>
               ) : (
                 orderedPosts.map((post) => {
-                  const isPostShared = Boolean(post.isShared || post.postType === 'Chia sẻ');
                   const linkBaiViet =
                     post.postUrl && post.postUrl !== 'N/A'
                       ? post.postUrl
@@ -1151,29 +1015,9 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       ? post.videoUrl
                       : '';
 
-                  const rawLinkGoc =
-                    post.reelUrl && post.reelUrl !== 'N/A'
-                      ? post.reelUrl
-                      : post.videoUrl && post.videoUrl !== 'N/A'
-                      ? post.videoUrl
-                      : '';
-
-                  const linkGoc = rawLinkGoc;
-                  const hasSeparateLinkGoc = Boolean(linkGoc && linkGoc !== linkBaiViet);
-
-                  const targetVideoUrl = isPostShared
-                    ? (linkBaiViet || linkGoc)
-                    : (linkGoc || linkBaiViet);
+                  const targetVideoUrl = linkBaiViet;
 
                   const isAlreadyTracked = videos.some((v) => {
-                    if (isPostShared) {
-                      return Boolean(
-                        post.postUrl &&
-                        post.postUrl !== 'N/A' &&
-                        (v.link === post.postUrl || (v.postId && (post.postUrl.includes('/' + v.postId) || post.postUrl.includes('=' + v.postId))))
-                      );
-                    }
-
                     if (targetVideoUrl && v.link === targetVideoUrl) return true;
                     if (post.reelUrl && v.link === post.reelUrl) return true;
                     if (post.postUrl && v.link === post.postUrl) return true;
@@ -1196,50 +1040,20 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                   return (
                     <tr
                       key={post.id}
-                      className={`hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors ${
-                        post.isChild ? 'bg-indigo-50/30 dark:bg-indigo-950/20' : ''
-                      }`}
+                      className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
                     >
                       {/* STT */}
                       <td style={{ width: colWidths.stt }} className="py-3 px-3.5 text-center font-mono text-[11px] border-r border-slate-100 dark:border-slate-800/50">
-                        {post.isChild ? (
-                          <div className="inline-flex items-center justify-center gap-0.5 text-indigo-500 font-bold">
-                            <span className="select-none text-xs">↳</span>
-                            <span>{post.sttDisplay}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-700 dark:text-slate-200 font-bold">{post.sttDisplay}</span>
-                        )}
+                        <span className="text-slate-700 dark:text-slate-200 font-bold">{post.sttDisplay}</span>
                       </td>
 
                       {/* Author */}
                       <td style={{ width: colWidths.author }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
-                        <div
-                          className={`font-bold truncate flex items-center gap-1 ${
-                            post.isChild
-                              ? 'text-indigo-600 dark:text-indigo-300 font-normal pl-2'
-                              : 'text-slate-900 dark:text-white'
-                          }`}
-                        >
-                          {post.isChild && <span className="text-indigo-400 select-none text-xs">↳</span>}
-                          <span className="truncate" title={post.author}>{post.author}</span>
+                        <div className="font-bold truncate text-slate-900 dark:text-white" title={post.author}>
+                          {post.author}
                         </div>
-                        {post.attachedAuthor && (
-                          <div
-                            className={`text-[11px] text-purple-600 dark:text-purple-400 truncate font-medium ${
-                              post.isChild ? 'pl-4' : ''
-                            }`}
-                            title={`Chia sẻ từ: ${post.attachedAuthor}`}
-                          >
-                            ↳ từ: {post.attachedAuthor}
-                          </div>
-                        )}
                         {post.profileSource && (
-                          <div
-                            className={`text-[10px] text-slate-400 truncate font-mono ${
-                              post.isChild ? 'pl-4' : ''
-                            }`}
-                          >
+                          <div className="text-[10px] text-slate-400 truncate font-mono">
                             {post.profileSource.replace('https://www.facebook.com/', '')}
                           </div>
                         )}
@@ -1250,9 +1064,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                         {(() => {
                           const loai = getPostLoai(post);
                           const loaiStyle =
-                            loai === 'Chia sẻ'
-                               ? 'bg-purple-50 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-500/30'
-                              : loai === 'Video'
+                            loai === 'Video'
                               ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
                               : loai === 'Hình ảnh'
                               ? 'bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30'
@@ -1268,16 +1080,9 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       {/* Caption */}
                       <td style={{ width: colWidths.preview }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
                         <div
-                          className={`line-clamp-2 max-w-[280px] flex items-start gap-1 ${
-                            post.isChild
-                              ? 'text-slate-600 dark:text-slate-300 pl-2 text-xs font-normal'
-                              : 'text-slate-800 dark:text-slate-200 text-xs font-semibold'
-                          }`}
+                          className="line-clamp-2 max-w-[280px] text-slate-800 dark:text-slate-200 text-xs font-semibold"
                           title={post.textPreview}
                         >
-                          {post.isChild && (
-                            <span className="text-indigo-400 select-none text-xs mt-0.5 shrink-0">↳</span>
-                          )}
                           <span className="line-clamp-2">{post.textPreview}</span>
                         </div>
                       </td>
@@ -1303,65 +1108,35 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
 
                       {/* Links */}
                       <td style={{ width: colWidths.link }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
-                        <div className="flex flex-col gap-1">
-                          {/* 1. Link bài viết */}
-                          <div className="flex items-center gap-1.5">
-                            {linkBaiViet ? (
-                              <a
-                                href={linkBaiViet}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="hover:underline flex items-center gap-1 font-mono text-[11px] truncate max-w-[130px] text-blue-600 dark:text-blue-400 font-semibold"
-                                title={`Mở link bài viết: ${linkBaiViet}`}
-                              >
-                                <ExternalLink className="w-3 h-3 shrink-0" />
-                                <span>Link bài viết</span>
-                              </a>
-                            ) : (
-                              <span className="text-slate-400 text-[11px]">N/A</span>
-                            )}
+                        <div className="flex items-center gap-1.5">
+                          {linkBaiViet ? (
+                            <a
+                              href={linkBaiViet}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="hover:underline flex items-center gap-1 font-mono text-[11px] truncate max-w-[130px] text-blue-600 dark:text-blue-400 font-semibold"
+                              title={`Mở link bài viết: ${linkBaiViet}`}
+                            >
+                              <ExternalLink className="w-3 h-3 shrink-0" />
+                              <span>Link bài viết</span>
+                            </a>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">N/A</span>
+                          )}
 
-                            {linkBaiViet && (
-                              <button
-                                type="button"
-                                onClick={() => handleCopy(linkBaiViet, `post_${post.id}`)}
-                                className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                                title="Sao chép link bài viết"
-                              >
-                                {copiedId === `post_${post.id}` ? (
-                                  <Check className="w-3 h-3 text-emerald-500" />
-                                ) : (
-                                  <Copy className="w-3 h-3" />
-                                )}
-                              </button>
-                            )}
-                          </div>
-
-                          {/* 2. Link gốc (chỉ hiện khi có nguồn video/reel gốc khác bài viết) */}
-                          {hasSeparateLinkGoc && (
-                            <div className="flex items-center gap-1 text-[10px] pl-0.5">
-                              <a
-                                href={linkGoc}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-slate-500 dark:text-slate-400 hover:text-blue-500 hover:underline flex items-center gap-0.5 truncate max-w-[120px]"
-                                title={`Mở link gốc: ${linkGoc}`}
-                              >
-                                <span>↳ Link gốc</span>
-                              </a>
-                              <button
-                                type="button"
-                                onClick={() => handleCopy(linkGoc, `origin_${post.id}`)}
-                                className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                                title="Sao chép link gốc"
-                              >
-                                {copiedId === `origin_${post.id}` ? (
-                                  <Check className="w-2.5 h-2.5 text-emerald-500" />
-                                ) : (
-                                  <Copy className="w-2.5 h-2.5" />
-                                )}
-                              </button>
-                            </div>
+                          {linkBaiViet && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(linkBaiViet, `post_${post.id}`)}
+                              className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
+                              title="Sao chép link bài viết"
+                            >
+                              {copiedId === `post_${post.id}` ? (
+                                <Check className="w-3 h-3 text-emerald-500" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                            </button>
                           )}
                         </div>
                       </td>
@@ -1378,11 +1153,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                                 ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800'
                                 : 'bg-blue-50 dark:bg-blue-500/15 hover:bg-blue-100 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
                             }`}
-                            title={
-                              isPostShared
-                                ? 'Thêm bài chia sẻ này vào Tracker để theo dõi riêng'
-                                : 'Thêm video này vào Video Tracker chính để theo dõi tự động'
-                            }
+                            title="Thêm video này vào Video Tracker chính để theo dõi tự động"
                           >
                             {isAdded ? (
                               <>
@@ -1396,10 +1167,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                               </>
                             )}
                           </button>
-                        ) : isPostShared && (!targetVideoUrl || targetVideoUrl === 'N/A') ? (
-                          <span className="text-slate-400 text-[10px] italic" title="Bài chia sẻ chưa có link permalink">
-                            Chưa có link
-                          </span>
                         ) : (
                           <span className="text-slate-400">—</span>
                         )}

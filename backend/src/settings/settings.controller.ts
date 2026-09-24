@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import { RolesGuard, Roles } from '../auth/roles.guard';
 import { DatabaseService } from '../database/database.service';
 import { VideosService } from '../videos/videos.service';
-import { UpdateIntervalDto } from './dto/settings.dto';
+import { UpdateIntervalDto, UpdateConcurrencyDto } from './dto/settings.dto';
 
 @Controller('settings')
 @UseGuards(RolesGuard)
@@ -32,6 +32,7 @@ export class SettingsController {
   public getSettings() {
     return {
       autoRefreshMinutes: this.videosService.getAutoRefreshMinutes(),
+      concurrency: this.videosService.getConcurrencySettings(),
       database: this.databaseService.getDatabaseStats(),
     };
   }
@@ -45,6 +46,21 @@ export class SettingsController {
       success: true,
       autoRefreshMinutes: dto.minutes,
       message: `Đã cập nhật chu kỳ quét tự động thành ${dto.minutes} phút.`,
+    };
+  }
+
+  @Post('concurrency')
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  public updateConcurrency(@Body() dto: UpdateConcurrencyDto) {
+    this.videosService.setConcurrencySettings(dto.mode, dto.count);
+    return {
+      success: true,
+      concurrency: this.videosService.getConcurrencySettings(),
+      message:
+        dto.mode === 'max'
+          ? 'Đã đặt số lượng luồng quét thành Tối đa.'
+          : `Đã đặt số lượng luồng quét thành ${dto.count || 5} luồng.`,
     };
   }
 

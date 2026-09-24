@@ -9,8 +9,14 @@ export interface DatabaseStats {
   lastModified: string | null;
 }
 
+export interface ConcurrencySettings {
+  mode: 'custom' | 'max';
+  count: number;
+}
+
 export interface SystemSettingsData {
   autoRefreshMinutes: number;
+  concurrency?: ConcurrencySettings;
   database: DatabaseStats;
 }
 
@@ -40,6 +46,22 @@ export const settingsApi = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.message || 'Lỗi khi cập nhật chu kỳ quét');
+    }
+    return res.json();
+  },
+
+  async updateConcurrency(mode: 'custom' | 'max', count?: number): Promise<{ success: boolean; concurrency: ConcurrencySettings; message: string }> {
+    const res = await fetch(`${API_BASE}/concurrency`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify({ mode, count }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Lỗi khi cập nhật số lượng luồng quét');
     }
     return res.json();
   },

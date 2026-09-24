@@ -9,7 +9,6 @@ import {
   FileText,
   Settings,
   HelpCircle,
-  Search,
   MoreVertical,
   Activity,
   X,
@@ -55,9 +54,8 @@ const ADMIN_ITEMS: NavItem[] = [
 ];
 
 const BOTTOM_ITEMS: NavItem[] = [
-  { key: 'settings', label: 'Settings', path: '/settings', icon: Settings },
-  { key: 'get_help', label: 'Get Help', path: '/help', icon: HelpCircle },
-  { key: 'search', label: 'Search', path: '/search', icon: Search },
+  { key: 'settings', label: 'Cài đặt', path: '/settings', icon: Settings },
+  { key: 'get_help', label: 'Trợ Giúp', path: '/help', icon: HelpCircle },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -306,27 +304,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    navigate('/team');
+                    navigate('/profile-management');
                     setIsProfileMenuOpen(false);
                     if (onCloseMobile) onCloseMobile();
                   }}
                   className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                 >
                   <User className="w-3.5 h-3.5" />
-                  <span>Hồ sơ cá nhân &amp; Nhóm</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigate('/settings');
-                    setIsProfileMenuOpen(false);
-                    if (onCloseMobile) onCloseMobile();
-                  }}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  <span>Cài đặt hệ thống</span>
+                  <span>Hồ sơ cá nhân</span>
                 </button>
 
                 <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
