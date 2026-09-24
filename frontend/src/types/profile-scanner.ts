@@ -3,7 +3,8 @@ export interface ScannedPostItem {
   videoId: string;
   isShared: boolean;
   hasVideo: boolean;
-  hasTargetTag: boolean;
+  /** Phân loại thô: 'Bài viết' | 'Video' | 'Hình ảnh' | 'Chia sẻ' */
+  loai?: string;
   postUrl: string;
   videoUrl: string;
   reelUrl: string;
@@ -12,18 +13,17 @@ export interface ScannedPostItem {
   postType: string;
   date: string;
   timestamp?: number;
-  taggedName: string;
   textPreview: string;
   viewsCount: string;
   likesCount: string;
   commentsCount: string;
   sharesCount: string;
   profileSource?: string;
+  attachedAuthor?: string;
 }
 
 export interface ProfileScanConfig {
   profileUrls: string[];
-  targetTag: string;
   maxScrolls: number;
   cookieCount: number;
   rawCookie: string;

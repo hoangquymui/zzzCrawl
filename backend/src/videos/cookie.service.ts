@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { chromium } from 'playwright';
+import { DatabaseService } from '../database/database.service';
 
 export interface CookieCheckResult {
   isValid: boolean;
@@ -28,9 +29,17 @@ export interface CookieInfo {
 }
 
 @Injectable()
-export class CookieService {
+export class CookieService implements OnModuleInit {
   private readonly logger = new Logger(CookieService.name);
   private lastCheckResult?: CookieCheckResult;
+
+  constructor(private readonly db: DatabaseService) {
+    this.syncCookies();
+  }
+
+  public onModuleInit(): void {
+    this.syncCookies();
+  }
 
   public getEffectiveCookiePath(): string {
     if (process.cwd().endsWith('backend')) {
@@ -51,11 +60,74 @@ export class CookieService {
     return rootPath;
   }
 
-  public loadCookies(): any[] {
+  /**
+   * Tự động đồng bộ 2 chiều giữa CSDL SQLite và tệp cookies.json
+   */
+  public syncCookies(): void {
     const filePath = this.getEffectiveCookiePath();
-    if (!fs.existsSync(filePath)) return [];
+    const dbMeta = this.db.getCookieWithMeta();
+    const dbCookie = dbMeta ? (dbMeta.value || '').trim() : '';
 
-    const raw = fs.readFileSync(filePath, 'utf8').trim();
+    let fileCookie = '';
+    let fileMtime = 0;
+
+    if (fs.existsSync(filePath)) {
+      try {
+        fileCookie = fs.readFileSync(filePath, 'utf8').trim();
+        fileMtime = fs.statSync(filePath).mtimeMs;
+      } catch (e: any) {
+        this.logger.warn(`Lỗi đọc file cookie khi đồng bộ: ${e?.message}`);
+      }
+    }
+
+    const hasFileContent = fileCookie && fileCookie !== '[]' && fileCookie !== '{}';
+    const hasDbContent = dbCookie && dbCookie !== '[]' && dbCookie !== '{}';
+
+    // 1. Nếu SQLite chưa có mà file có -> Nạp từ file vào SQLite
+    if (!hasDbContent && hasFileContent) {
+      this.db.saveCookie(fileCookie);
+      this.logger.log(`[CookieService] Đồng bộ Cookie từ tệp '${filePath}' vào SQLite.`);
+    }
+    // 2. Nếu SQLite có mà file chưa có hoặc rỗng -> Ghi từ SQLite ra tệp
+    else if (hasDbContent && !hasFileContent) {
+      try {
+        fs.writeFileSync(filePath, dbCookie, 'utf8');
+        this.logger.log(`[CookieService] Đồng bộ Cookie từ SQLite ra tệp '${filePath}'.`);
+      } catch (e: any) {
+        this.logger.error(`[CookieService] Lỗi ghi file cookie khi đồng bộ: ${e?.message}`);
+      }
+    }
+    // 3. Nếu cả 2 đều có và nội dung khác nhau -> So sánh thời gian chỉnh sửa
+    else if (hasDbContent && hasFileContent && fileCookie !== dbCookie) {
+      const dbTime = dbMeta?.updatedAt ? new Date(dbMeta.updatedAt).getTime() : 0;
+      if (fileMtime > dbTime) {
+        this.db.saveCookie(fileCookie);
+        this.logger.log(`[CookieService] Tệp cookies.json được sửa mới hơn, đã đồng bộ vào SQLite.`);
+      } else {
+        try {
+          fs.writeFileSync(filePath, dbCookie, 'utf8');
+          this.logger.log(`[CookieService] Cập nhật tệp cookies.json từ SQLite.`);
+        } catch (e: any) {
+          this.logger.error(`[CookieService] Lỗi đồng bộ SQLite ra tệp: ${e?.message}`);
+        }
+      }
+    }
+  }
+
+  public loadCookies(): any[] {
+    this.syncCookies();
+    const filePath = this.getEffectiveCookiePath();
+
+    let raw = '';
+    if (fs.existsSync(filePath)) {
+      try {
+        raw = fs.readFileSync(filePath, 'utf8').trim();
+      } catch {}
+    }
+    if (!raw) {
+      raw = (this.db.getCookie() || '').trim();
+    }
+
     if (!raw || raw === '[]' || raw === '{}') return [];
 
     try {
@@ -112,15 +184,24 @@ export class CookieService {
   }
 
   public getCookieInfo(): CookieInfo {
+    this.syncCookies();
     const filePath = this.getEffectiveCookiePath();
-    let rawCookie = '';
+    let rawCookie = (this.db.getCookie() || '').trim();
     let updatedAt: string | undefined;
 
-    if (fs.existsSync(filePath)) {
+    const dbMeta = this.db.getCookieWithMeta();
+    if (dbMeta && dbMeta.updatedAt) {
+      updatedAt = dbMeta.updatedAt;
+    } else if (fs.existsSync(filePath)) {
       try {
-        rawCookie = fs.readFileSync(filePath, 'utf8').trim();
         const stat = fs.statSync(filePath);
         updatedAt = stat.mtime.toISOString();
+      } catch {}
+    }
+
+    if (!rawCookie && fs.existsSync(filePath)) {
+      try {
+        rawCookie = fs.readFileSync(filePath, 'utf8').trim();
       } catch (err: any) {
         this.logger.error(`Lỗi đọc file cookie: ${err?.message}`);
       }
@@ -137,6 +218,7 @@ export class CookieService {
     });
 
     const hasCookie = cookies.length > 0;
+    const lastCheck = this.lastCheckResult || this.db.getCookieLastCheck();
 
     return {
       hasCookie,
@@ -145,25 +227,116 @@ export class CookieService {
       detectedCookies,
       filePath,
       updatedAt,
-      lastCheck: this.lastCheckResult,
+      lastCheck,
     };
   }
 
   public saveCookie(content: string): CookieInfo {
     const filePath = this.getEffectiveCookiePath();
     const clean = (content || '').trim();
-    fs.writeFileSync(filePath, clean, 'utf8');
+
+    // 1. Lưu vào SQLite
+    this.db.saveCookie(clean);
+
+    // 2. Đồng bộ ra file cookies.json
+    try {
+      fs.writeFileSync(filePath, clean, 'utf8');
+    } catch (err: any) {
+      this.logger.error(`[CookieService] Lỗi ghi file cookies.json: ${err?.message}`);
+    }
+
     this.lastCheckResult = undefined;
-    this.logger.log(`[CookieService] Đã lưu cookie vào: ${filePath}`);
+    this.logger.log(`[CookieService] Đã lưu cookie vào SQLite và đồng bộ tệp: ${filePath}`);
     return this.getCookieInfo();
   }
 
   public clearCookie(): CookieInfo {
     const filePath = this.getEffectiveCookiePath();
-    fs.writeFileSync(filePath, '[]', 'utf8');
+
+    // 1. Làm trống trong SQLite
+    this.db.saveCookie('[]');
+
+    // 2. Đồng bộ ra tệp cookies.json
+    try {
+      fs.writeFileSync(filePath, '[]', 'utf8');
+    } catch (err: any) {
+      this.logger.error(`[CookieService] Lỗi làm trống tệp cookies.json: ${err?.message}`);
+    }
+
     this.lastCheckResult = undefined;
-    this.logger.log(`[CookieService] Đã làm trống file cookie: ${filePath}`);
+    this.logger.log(`[CookieService] Đã làm trống cookie trong SQLite và tệp: ${filePath}`);
     return this.getCookieInfo();
+  }
+
+  /**
+   * Đường nhanh: kiểm tra phiên đăng nhập bằng HTTPS Request (không mở trình duyệt, ~1s).
+   * Xác minh qua marker "USER_ID"/"actorID" trong HTML trang chủ Facebook.
+   * Trả về null nếu không xác định rõ để caller fallback qua Playwright.
+   */
+  private async checkCookieValidityHttp(
+    cookies: any[],
+    cUser: string
+  ): Promise<CookieCheckResult | null> {
+    try {
+      const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+      // /me: còn phiên → trả về trang cá nhân chứa USER_ID; hết phiên → redirect sang trang đăng nhập
+      const res = await fetch('https://www.facebook.com/me', {
+        headers: {
+          Cookie: cookieHeader,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+      const html = await res.text();
+      const finalUrl = (res.url || '').toLowerCase();
+
+      const redirectedToLogin =
+        finalUrl.includes('login.php') ||
+        finalUrl.includes('/login/') ||
+        finalUrl.includes('/checkpoint/');
+      const hasLoginWall =
+        html.includes('Hãy đăng nhập hoặc đăng ký') || html.includes('login_form');
+      const hasSession =
+        html.includes(`"USER_ID":"${cUser}"`) || html.includes(`"actorID":"${cUser}"`);
+
+      if (hasSession && !redirectedToLogin) {
+        return {
+          isValid: true,
+          status: 'VALID',
+          cUser,
+          message: `Cookie còn hạn! Đang đăng nhập tài khoản Facebook (UID: ${cUser}).`,
+          checkedAt: new Date().toISOString(),
+        };
+      }
+
+      if (redirectedToLogin || hasLoginWall) {
+        return {
+          isValid: false,
+          status: 'EXPIRED',
+          cUser,
+          message: `Cookie đã hết hạn hoặc phiên đăng nhập bị hủy (${redirectedToLogin ? 'Bị điều hướng sang trang đăng nhập' : 'Facebook hiển thị form đăng nhập'}).`,
+          checkedAt: new Date().toISOString(),
+        };
+      }
+
+      // HTML khác thường / không đủ marker → không kết luận được
+      return null;
+    } catch (err: any) {
+      this.logger.warn(
+        `[CookieService] Kiểm tra qua HTTPS Request không thành công, chuyển sang trình duyệt: ${err?.message}`
+      );
+      return null;
+    }
   }
 
   public async checkCookieValidity(): Promise<CookieCheckResult> {
@@ -179,7 +352,16 @@ export class CookieService {
         checkedAt: new Date().toISOString(),
       };
       this.lastCheckResult = res;
+      this.db.saveCookieLastCheck(res);
       return res;
+    }
+
+    // Ưu tiên đường HTTPS Request nhanh (~1s), chỉ mở trình duyệt khi không kết luận được
+    const httpResult = await this.checkCookieValidityHttp(cookies, cUser);
+    if (httpResult) {
+      this.lastCheckResult = httpResult;
+      this.db.saveCookieLastCheck(httpResult);
+      return httpResult;
     }
 
     let browser = null;
@@ -288,6 +470,7 @@ export class CookieService {
       };
 
       this.lastCheckResult = res;
+      this.db.saveCookieLastCheck(res);
       return res;
     } catch (err: any) {
       this.logger.error(`Lỗi kiểm tra cookie: ${err?.message || String(err)}`);
@@ -298,6 +481,7 @@ export class CookieService {
         checkedAt: new Date().toISOString(),
       };
       this.lastCheckResult = res;
+      this.db.saveCookieLastCheck(res);
       return res;
     } finally {
       if (browser) {

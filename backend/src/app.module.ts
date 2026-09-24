@@ -3,8 +3,10 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import * as fs from 'fs';
 import * as path from 'path';
+import { DatabaseModule } from './database/database.module';
 import { VideosModule } from './videos/videos.module';
 import { AuthModule } from './auth/auth.module';
+import { SettingsModule } from './settings/settings.module';
 
 const getPublicPath = () => {
   const p1 = path.join(process.cwd(), 'public');
@@ -16,6 +18,7 @@ const getPublicPath = () => {
 
 @Module({
   imports: [
+    DatabaseModule,
     ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: getPublicPath(),
@@ -23,6 +26,7 @@ const getPublicPath = () => {
     }),
     AuthModule,
     VideosModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}

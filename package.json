@@ -6,6 +6,7 @@
   "scripts": {
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
+    "dev": "npm --prefix frontend run build:backend && npm --prefix backend run dev",
     "build:backend": "npm --prefix backend run build",
     "build:frontend": "npm --prefix frontend run build:backend",
     "build": "npm run build:frontend && npm run build:backend && node scripts/copy-deploy.js",

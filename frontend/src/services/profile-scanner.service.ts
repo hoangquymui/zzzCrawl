@@ -27,7 +27,6 @@ export const profileScannerApi = {
 
   async startScan(params: {
     profileUrls: string[];
-    targetTag: string;
     maxScrolls: number;
     startDate?: string;
     endDate?: string;

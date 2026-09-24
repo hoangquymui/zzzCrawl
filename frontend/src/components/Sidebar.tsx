@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import {
   Compass,
-  GitBranch,
   BarChart3,
   Users,
   Link2,
@@ -19,6 +18,7 @@ import {
   ShieldCheck,
   Lock,
   LogOut,
+  Layers,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -37,18 +37,21 @@ interface NavItem {
 }
 
 const HOME_ITEMS: NavItem[] = [
-  { key: 'dashboard', label: 'Dashboard', path: '/', icon: Compass },
-  { key: 'lifecycle', label: 'Lifecycle', path: '/lifecycle', icon: GitBranch },
-  { key: 'analytics', label: 'Analytics', path: '/analytics', icon: BarChart3 },
-  { key: 'users', label: 'Users', path: '/users', icon: Users, adminOnly: true },
+  { key: 'dashboard', label: 'Trang chủ', path: '/', icon: Compass },
+  { key: 'post_management', label: 'Quản lý bài viết', path: '/post-management', icon: Layers },
+  { key: 'analytics', label: 'Biểu đồ', path: '/analytics', icon: BarChart3 },
 ];
 
 const DOCUMENT_ITEMS: NavItem[] = [
+  { key: 'link', label: 'Dữ liệu', path: '/link', icon: Link2 },
+  { key: 'video_profile', label: 'Thu thập dữ liệu cá nhân', path: '/video-profile', icon: Video },
+  { key: 'profile_management', label: 'Trang cá nhân', path: '/profile-management', icon: UserCheck },
+  { key: 'reports', label: 'Báo cáo', path: '/reports', icon: FileText },
   { key: 'cookie', label: 'Cookie', path: '/cookie', icon: ShieldCheck },
-  { key: 'link', label: 'Video Link', path: '/link', icon: Link2 },
-  { key: 'video_profile', label: 'Video Profile', path: '/video-profile', icon: Video },
-  { key: 'profile_management', label: 'Profile', path: '/profile-management', icon: UserCheck },
-  { key: 'reports', label: 'Reports', path: '/reports', icon: FileText },
+];
+
+const ADMIN_ITEMS: NavItem[] = [
+  { key: 'users', label: 'Quản lý tài khoản', path: '/users', icon: Users, adminOnly: true },
 ];
 
 const BOTTOM_ITEMS: NavItem[] = [
@@ -75,6 +78,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     if (path === '/profile-management') {
       return location.pathname === '/profile-management' || location.pathname === '/profile';
+    }
+    if (path === '/post-management') {
+      return location.pathname === '/post-management' || location.pathname === '/quan-ly-bai-viet';
     }
     return location.pathname === path || location.pathname.startsWith(`${path}/`);
   };
@@ -164,19 +170,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* Group 1: Home (Khi chưa đăng nhập chỉ hiện Dashboard) */}
+        {/* Group 1: Trang chủ (Khi chưa đăng nhập chỉ hiện Trang chủ) */}
         <div className="mb-4">
           <div className="px-3 pb-1.5 text-[11px] font-semibold text-slate-400 dark:text-slate-500 tracking-wider">
-            Home
+            Trang chủ
           </div>
           {renderNavList(isAuthenticated ? HOME_ITEMS : [HOME_ITEMS[0]])}
         </div>
 
-        {/* Group 2: Documents (Chỉ hiện khi đã đăng nhập; User bị ẩn trang Cookie) */}
+        {/* Group 2: Dữ liệu (Chỉ hiện khi đã đăng nhập; User bị ẩn trang Cookie và Thu thập dữ liệu cá nhân) */}
         {isAuthenticated && (
           <div className="mb-4">
             <div className="px-3 pb-1.5 text-[11px] font-semibold text-slate-400 dark:text-slate-500 tracking-wider">
-              Documents
+              Dữ liệu
             </div>
             {renderNavList(
               isAdmin
@@ -185,6 +191,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     (item) => item.key !== 'cookie' && item.key !== 'video_profile'
                   )
             )}
+          </div>
+        )}
+
+        {/* Group 3: Quản trị (Chỉ hiện khi là Admin) */}
+        {isAuthenticated && isAdmin && (
+          <div className="mb-4">
+            <div className="px-3 pb-1.5 text-[11px] font-semibold text-slate-400 dark:text-slate-500 tracking-wider">
+              Quản trị
+            </div>
+            {renderNavList(ADMIN_ITEMS)}
           </div>
         )}
 

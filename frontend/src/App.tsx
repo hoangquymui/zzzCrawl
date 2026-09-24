@@ -11,7 +11,6 @@ import { useVideoTracker } from './hooks/useVideoTracker';
 import { DashboardPage } from './pages/DashboardPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { DataLibraryPage } from './pages/DataLibraryPage';
-import { LifecyclePage } from './pages/LifecyclePage';
 import { UsersPage } from './pages/UsersPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -19,6 +18,7 @@ import { HelpPage } from './pages/HelpPage';
 import { VideoProfilePage } from './pages/VideoProfilePage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { CookiePage } from './pages/CookiePage';
+import { PostManagementPage } from './pages/PostManagementPage';
 
 export const App: React.FC = () => {
   const {
@@ -139,20 +139,24 @@ export const App: React.FC = () => {
             <Route path="/profile" element={<Navigate to="/profile-management" replace />} />
             <Route path="/quan-ly-profile" element={<Navigate to="/profile-management" replace />} />
 
-            {/* 5. Lifecycle (Tiến trình cào, worker queue - Yêu cầu đăng nhập) */}
+            {/* 4c. Quản lý bài viết (3 cột: Profile + Phân loại + Thông tin bài viết - Yêu cầu đăng nhập) */}
             <Route
-              path="/lifecycle"
+              path="/post-management"
               element={
                 <ProtectedRoute>
-                  <LifecyclePage
+                  <PostManagementPage
                     videos={videos}
-                    batchProgress={batchProgress}
-                    isConnected={isConnected}
-                    onRefreshAll={handleRefreshAll}
+                    onRefreshOne={handleRefreshOne}
+                    onDelete={handleDelete}
                   />
                 </ProtectedRoute>
               }
             />
+            <Route path="/quan-ly-bai-viet" element={<Navigate to="/post-management" replace />} />
+            <Route path="/posts" element={<Navigate to="/post-management" replace />} />
+
+            {/* Redirect /lifecycle to / */}
+            <Route path="/lifecycle" element={<Navigate to="/" replace />} />
 
 
             {/* 7. Users (Quản lý người dùng & phân quyền - Yêu cầu quyền Admin) */}

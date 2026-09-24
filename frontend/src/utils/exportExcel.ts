@@ -16,7 +16,7 @@ export function exportVideosToExcel(
   const data = videos.map((v) => ({
     'STT': v.STT,
     'Đường Link': v.link || '',
-    'Tiêu đề / Caption': v.caption || '',
+    'Tiêu đề / Caption': v.caption && v.caption.trim() ? v.caption : 'Không có tiêu đề',
     'Nền tảng': v.loai || '',
     'Người đăng': v.nguoiDang || '',
     'Ngày đăng': v.ngayDang || '',

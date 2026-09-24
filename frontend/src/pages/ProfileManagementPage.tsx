@@ -25,6 +25,8 @@ import { profileManagementApi } from '../services/profile-management.service';
 import { cookieApi } from '../services/cookie.service';
 import { Toast } from '../components/Toast';
 import { ToastItem } from '../types/video';
+import { useResizableColumns } from '../hooks/useResizableColumns';
+import { ResizeHandle } from '../components/ResizeHandle';
 import {
   UserProfileItem,
   ProfileCrawlProgress,
@@ -67,6 +69,17 @@ export const ProfileManagementPage: React.FC = () => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Kéo giãn độ rộng các cột của bảng
+  const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
+    {
+      stt: 60,
+      name: 320,
+      uid: 200,
+      actions: 140,
+    },
+    'profile_management_table'
+  );
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -607,10 +620,22 @@ export const ProfileManagementPage: React.FC = () => {
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-50/75 dark:bg-slate-800/40 text-slate-600 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-800">
-                <th className="py-3 px-4 w-12 text-center">STT</th>
-                <th className="py-3 px-4 min-w-[220px]">Họ và tên</th>
-                <th className="py-3 px-4 min-w-[140px]">UID</th>
-                <th className="py-3 px-4 min-w-[110px] text-right">Thao tác</th>
+                <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative py-3 px-4 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
+                  STT
+                  <ResizeHandle onMouseDown={(e) => handleColResize('stt', e)} />
+                </th>
+                <th style={{ width: colWidths.name, minWidth: colWidths.name }} className="relative py-3 px-4 border-r border-slate-200 dark:border-slate-800">
+                  Họ và tên
+                  <ResizeHandle onMouseDown={(e) => handleColResize('name', e)} />
+                </th>
+                <th style={{ width: colWidths.uid, minWidth: colWidths.uid }} className="relative py-3 px-4 border-r border-slate-200 dark:border-slate-800">
+                  UID
+                  <ResizeHandle onMouseDown={(e) => handleColResize('uid', e)} />
+                </th>
+                <th style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="relative py-3 px-4 text-right">
+                  Thao tác
+                  <ResizeHandle onMouseDown={(e) => handleColResize('actions', e)} />
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800/80">
@@ -633,12 +658,12 @@ export const ProfileManagementPage: React.FC = () => {
                     className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors"
                   >
                     {/* STT */}
-                    <td className="py-3.5 px-4 text-center font-mono text-slate-400">
+                    <td style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="py-3.5 px-4 text-center font-mono text-slate-400 border-r border-slate-100 dark:border-slate-800/60">
                       {idx + 1}
                     </td>
 
                     {/* Họ và tên */}
-                    <td className="py-3.5 px-4">
+                    <td style={{ width: colWidths.name, minWidth: colWidths.name }} className="py-3.5 px-4 border-r border-slate-100 dark:border-slate-800/60">
                       <div className="flex items-center gap-3">
                         {p.avatarUrl ? (
                           <img
@@ -681,7 +706,7 @@ export const ProfileManagementPage: React.FC = () => {
                     </td>
 
                     {/* UID */}
-                    <td className="py-3.5 px-4 font-mono text-xs">
+                    <td style={{ width: colWidths.uid, minWidth: colWidths.uid }} className="py-3.5 px-4 font-mono text-xs border-r border-slate-100 dark:border-slate-800/60">
                       {p.uid ? (
                         <span className="inline-block px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-semibold border border-slate-200 dark:border-slate-700">
                           {p.uid}
@@ -692,7 +717,7 @@ export const ProfileManagementPage: React.FC = () => {
                     </td>
 
                     {/* Thao tác */}
-                    <td className="py-3.5 px-4 text-right">
+                    <td style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1">
                         {/* Mở Facebook */}
                         <a

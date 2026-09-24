@@ -32,7 +32,7 @@ export function exportVideosToCSV(
   const rows = videos.map((v) => [
     v.STT,
     escapeCSV(v.link),
-    escapeCSV(v.caption),
+    escapeCSV(v.caption && v.caption.trim() ? v.caption : 'Không có tiêu đề'),
     escapeCSV(v.loai),
     escapeCSV(v.nguoiDang),
     escapeCSV(v.ngayDang),

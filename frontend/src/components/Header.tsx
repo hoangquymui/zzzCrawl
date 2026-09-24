@@ -10,20 +10,20 @@ interface HeaderProps {
 }
 
 const PATH_TITLES: Record<string, string> = {
-  "/": "Dashboard",
-  "/dashboard": "Dashboard",
-  "/lifecycle": "Lifecycle",
-  "/analytics": "Analytics",
-  "/users": "Users",
+  "/": "Trang chủ",
+  "/dashboard": "Trang chủ",
+  "/post-management": "Quản lý bài viết",
+  "/analytics": "Biểu đồ",
+  "/users": "Quản lý tài khoản",
   "/cookie": "Cookie",
-  "/link": "Video Link",
-  "/data-library": "Video Link",
-  "/video-link": "Video Link",
-  "/video-profile": "Video Profile",
-  "/profile-management": "Profile",
-  "/profile": "Profile",
-  "/reports": "Reports",
-  "/more": "Documents",
+  "/link": "Dữ liệu",
+  "/data-library": "Dữ liệu",
+  "/video-link": "Dữ liệu",
+  "/video-profile": "Thu thập dữ liệu cá nhân",
+  "/profile-management": "Trang cá nhân",
+  "/profile": "Trang cá nhân",
+  "/reports": "Báo cáo",
+  "/more": "Dữ liệu",
   "/settings": "Settings",
   "/help": "Get Help",
   "/search": "Search",
@@ -37,7 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
   const { user, isAuthenticated, isAdmin, openLoginModal, logout } = useAuth();
   const location = useLocation();
 
-  const currentTitle = PATH_TITLES[location.pathname] || "Documents";
+  const currentTitle = PATH_TITLES[location.pathname] || "Dữ liệu";
 
   return (
     <header className="border-b border-slate-200 dark:border-slate-800 bg-white/85 dark:bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 px-4 sm:px-6 py-3 transition-colors">

@@ -9,7 +9,6 @@ import {
   Activity,
   FileText,
   Video,
-  Hash,
   ExternalLink,
   Plus,
   Copy,
@@ -20,6 +19,8 @@ import {
   ChevronDown,
   Calendar,
 } from 'lucide-react';
+import { useResizableColumns } from '../hooks/useResizableColumns';
+import { ResizeHandle } from '../components/ResizeHandle';
 import { DateRangePicker } from '../components/DateRangePicker';
 import { socket } from '../services/socket';
 import { profileScannerApi } from '../services/profile-scanner.service';
@@ -46,10 +47,24 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
   const [availableProfiles, setAvailableProfiles] = useState<UserProfileItem[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>('');
   const [profileUrlsText, setProfileUrlsText] = useState('');
-  const [targetTag, setTargetTag] = useState('');
   const [maxScrolls, setMaxScrolls] = useState<number>(5);
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+
+  // Kéo giãn độ rộng các cột của bảng
+  const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
+    {
+      stt: 55,
+      author: 160,
+      loai: 95,
+      preview: 280,
+      interactions: 160,
+      date: 110,
+      link: 170,
+      actions: 120,
+    },
+    'scanner_table'
+  );
 
   // Cookie manager modal
   const [isCookieModalOpen, setIsCookieModalOpen] = useState(false);
@@ -70,6 +85,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
   // Terminal & search
   const [autoScroll, setAutoScroll] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -84,18 +100,26 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     toastTimerRef.current = setTimeout(() => setToast(null), 3500);
   };
 
-  // Load config & initial state on mount
-  useEffect(() => {
-    // Tải danh sách profile có sẵn từ Quản lý Profile
+  // Tải danh sách profile có sẵn từ Quản lý Profile (tự động đồng bộ realtime)
+  const refreshProfiles = () => {
     profileManagementApi
       .getState()
       .then((st) => {
         if (st.profiles && st.profiles.length > 0) {
           setAvailableProfiles(st.profiles);
-          setSelectedProfileId(st.profiles[0].id);
+          setSelectedProfileId((prev) => {
+            if (!prev) return st.profiles[0].id;
+            if (st.profiles.some((p) => p.id === prev)) return prev;
+            return st.profiles[0].id;
+          });
         }
       })
       .catch(() => {});
+  };
+
+  // Load config & initial state on mount
+  useEffect(() => {
+    refreshProfiles();
 
     profileScannerApi
       .getConfig()
@@ -103,7 +127,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
         if (cfg.profileUrls && cfg.profileUrls.length > 0) {
           setProfileUrlsText(cfg.profileUrls.join('\n'));
         }
-        if (cfg.targetTag) setTargetTag(cfg.targetTag);
         if (cfg.maxScrolls) {
           setMaxScrolls(Math.min(15, Math.max(1, cfg.maxScrolls)));
         } else {
@@ -167,12 +190,16 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     socket.on('profile_scanner_found', handleFound);
     socket.on('profile_scanner_progress', handleProgress);
     socket.on('profile_scanner_status', handleStatus);
+    socket.on('profile_mgmt_item', refreshProfiles);
+    socket.on('profile_mgmt_status', refreshProfiles);
 
     return () => {
       socket.off('profile_scanner_log', handleLog);
       socket.off('profile_scanner_found', handleFound);
       socket.off('profile_scanner_progress', handleProgress);
       socket.off('profile_scanner_status', handleStatus);
+      socket.off('profile_mgmt_item', refreshProfiles);
+      socket.off('profile_mgmt_status', refreshProfiles);
     };
   }, []);
 
@@ -230,7 +257,6 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
       setFoundPosts([]);
       await profileScannerApi.startScan({
         profileUrls: urls,
-        targetTag,
         maxScrolls: Math.min(15, Math.max(1, maxScrolls || 5)),
         startDate: startDate || undefined,
         endDate: endDate || undefined,
@@ -479,14 +505,33 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     return orderedList;
   };
 
-  // Filtered posts (by search term)
+  // Phân loại hiển thị: ưu tiên trường loai mới, fallback cho dữ liệu quét cũ (FB Reel → Video)
+  const getPostLoai = (p: ScannedPostItem): string => {
+    if (p.isShared || p.postType === 'Chia sẻ') return 'Chia sẻ';
+    if (p.loai) return p.loai;
+    return p.hasVideo ? 'Video' : 'Bài viết';
+  };
+
+  // Thống kê số lượng bài theo từng loại
+  const typeCounts = {
+    all: foundPosts.length,
+    Video: foundPosts.filter((p) => getPostLoai(p) === 'Video').length,
+    'Hình ảnh': foundPosts.filter((p) => getPostLoai(p) === 'Hình ảnh').length,
+    'Bài viết': foundPosts.filter((p) => getPostLoai(p) === 'Bài viết').length,
+    'Chia sẻ': foundPosts.filter((p) => getPostLoai(p) === 'Chia sẻ').length,
+  };
+
+  // Filtered posts (by search term and type)
   const filteredPosts = foundPosts.filter((p) => {
+    if (typeFilter !== 'all') {
+      if (getPostLoai(p) !== typeFilter) return false;
+    }
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
       return (
         p.author.toLowerCase().includes(term) ||
+        (p.attachedAuthor && p.attachedAuthor.toLowerCase().includes(term)) ||
         p.textPreview.toLowerCase().includes(term) ||
-        p.taggedName.toLowerCase().includes(term) ||
         p.postUrl.toLowerCase().includes(term) ||
         p.reelUrl.toLowerCase().includes(term)
       );
@@ -501,9 +546,9 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     if (orderedPosts.length === 0) return;
     const headers = [
       'STT',
-      'LINK',
+      'LINK_BAI_VIET',
+      'LINK_GOC',
       'CAPTION',
-      'TAG',
       'LOAI',
       'NGUOI_DANG',
       'NGAY_DANG',
@@ -515,16 +560,26 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
 
     const rows = orderedPosts.map((p) => {
       const isShared = Boolean(p.isShared || p.postType === 'Chia sẻ');
-      const link = isShared
-        ? (p.postUrl && p.postUrl !== 'N/A' ? p.postUrl : (p.reelUrl || p.videoUrl))
-        : (p.reelUrl && p.reelUrl !== 'N/A' ? p.reelUrl : (p.videoUrl || p.postUrl));
+      const linkBaiViet =
+        p.postUrl && p.postUrl !== 'N/A'
+          ? p.postUrl
+          : !isShared
+          ? (p.reelUrl && p.reelUrl !== 'N/A' ? p.reelUrl : (p.videoUrl && p.videoUrl !== 'N/A' ? p.videoUrl : ''))
+          : '';
+      const rawLinkGoc =
+        p.reelUrl && p.reelUrl !== 'N/A'
+          ? p.reelUrl
+          : p.videoUrl && p.videoUrl !== 'N/A'
+          ? p.videoUrl
+          : '';
+      const linkGoc = rawLinkGoc !== linkBaiViet ? rawLinkGoc : '';
       const captionPrefix = p.isChild ? '  ↳ ' : '';
       return [
         `"${p.sttDisplay}"`,
-        `"${(link || '').replace(/"/g, '""')}"`,
+        `"${(linkBaiViet || '').replace(/"/g, '""')}"`,
+        `"${(linkGoc || '').replace(/"/g, '""')}"`,
         `"${(captionPrefix + (p.textPreview || '')).replace(/"/g, '""')}"`,
-        `"${(p.taggedName || '').replace(/"/g, '""')}"`,
-        `"${(isShared ? 'Chia sẻ' : (p.postType || 'FB Reel')).replace(/"/g, '""')}"`,
+        `"${getPostLoai(p).replace(/"/g, '""')}"`,
         `"${(p.author || '').replace(/"/g, '""')}"`,
         `"${(p.date || '').replace(/"/g, '""')}"`,
         p.sharesCount || '0',
@@ -541,7 +596,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `facebook_reels_scan_${Date.now()}.csv`);
+    link.setAttribute('download', `facebook_profile_posts_scan_${Date.now()}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -572,7 +627,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                 </span>
               </h1>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Tự động quét trang cá nhân / Fanpage để tìm bài viết chứa Video và thẻ Tag mục tiêu
+                Tự động quét trang cá nhân / Fanpage để thu thập toàn bộ bài viết và video
               </p>
             </div>
           </div>
@@ -739,27 +794,13 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                 )}
               </div>
 
-              {/* Target Tag & Max Scrolls (Căn chỉnh đồng bộ 100% chuẩn hàng) */}
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-start">
-                <div className="sm:col-span-8 flex flex-col space-y-1.5">
-                  <label className="h-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                    <Hash className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                    <span>Target Tag / Hashtag</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={targetTag}
-                    onChange={(e) => setTargetTag(e.target.value)}
-                    disabled={status === 'RUNNING'}
-                    placeholder="m123_kiemtra (để trống nếu quét tất cả)"
-                    className="w-full h-[38px] bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-xl px-3.5 py-2 text-xs font-mono text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 transition outline-none disabled:opacity-60"
-                  />
-                </div>
-
-                <div className="sm:col-span-4 flex flex-col space-y-1.5">
+              {/* Số lần cuộn trang & Khoảng ngày đăng trên cùng một hàng */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Max Scrolls */}
+                <div className="flex flex-col space-y-1.5">
                   <label className="h-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                     <RotateCcw className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                    <span>Scrolls tối đa</span>
+                    <span>Số lần cuộn trang (Scrolls tối đa)</span>
                   </label>
                   <input
                     type="number"
@@ -774,24 +815,24 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                     className="w-full h-[38px] bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-xl px-3.5 py-2 text-xs font-mono text-slate-800 dark:text-slate-200 transition outline-none disabled:opacity-60"
                   />
                 </div>
-              </div>
 
-              {/* Khoảng ngày đăng (Sử dụng DateRangePicker chuẩn giống Video Link) */}
-              <div className="flex flex-col space-y-1.5">
-                <label className="h-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  <Calendar className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                  <span>Khoảng ngày đăng (Tùy chọn)</span>
-                </label>
-                <div className="flex items-center">
-                  <DateRangePicker
-                    startDate={startDate}
-                    endDate={endDate}
-                    onChange={({ startDate: s, endDate: e }) => {
-                      setStartDate(s);
-                      setEndDate(e);
-                    }}
-                    placeholder="Chọn khoảng ngày đăng..."
-                  />
+                {/* Khoảng ngày đăng */}
+                <div className="flex flex-col space-y-1.5">
+                  <label className="h-5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                    <Calendar className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                    <span>Khoảng ngày đăng (Tùy chọn)</span>
+                  </label>
+                  <div className="flex items-center h-[38px]">
+                    <DateRangePicker
+                      startDate={startDate}
+                      endDate={endDate}
+                      onChange={({ startDate: s, endDate: e }) => {
+                        setStartDate(s);
+                        setEndDate(e);
+                      }}
+                      placeholder="Chọn khoảng ngày đăng..."
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -921,7 +962,9 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
             <Check className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Khớp thẻ #{targetTag}</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              Tổng kết quả thu thập
+            </div>
             <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{matchedCount}</div>
           </div>
         </div>
@@ -930,11 +973,91 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
       {/* Scanned Results Table Section */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden">
         {/* Table Toolbar */}
-        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3.5">
-          <div className="flex items-center gap-2">
-            <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <h3 className="font-bold text-sm text-slate-900 dark:text-white shrink-0">
               Kết Quả Quét ({filteredPosts.length})
             </h3>
+
+            {/* Filter Tabs theo loại bài */}
+            {foundPosts.length > 0 && (
+              <div className="inline-flex items-center rounded-xl bg-slate-100 dark:bg-slate-800/80 p-0.5 text-xs overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('all')}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                    typeFilter === 'all'
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span>Tất cả</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200/70 dark:bg-slate-700/80 font-mono font-semibold">
+                    {typeCounts.all}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('Video')}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                    typeFilter === 'Video'
+                      ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span>Video</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 font-mono font-semibold">
+                    {typeCounts.Video}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('Hình ảnh')}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                    typeFilter === 'Hình ảnh'
+                      ? 'bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span>Hình ảnh</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-mono font-semibold">
+                    {typeCounts['Hình ảnh']}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('Bài viết')}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                    typeFilter === 'Bài viết'
+                      ? 'bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 shadow-xs font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span>Bài viết</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200/70 dark:bg-slate-700/80 font-mono font-semibold">
+                    {typeCounts['Bài viết']}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setTypeFilter('Chia sẻ')}
+                  className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                    typeFilter === 'Chia sẻ'
+                      ? 'bg-white dark:bg-slate-900 text-purple-600 dark:text-purple-400 shadow-xs font-bold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span>Chia sẻ</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-300 font-mono font-semibold">
+                    {typeCounts['Chia sẻ']}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -955,7 +1078,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
               type="button"
               onClick={handleExportCSV}
               disabled={filteredPosts.length === 0}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition flex items-center gap-1.5 shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 transition flex items-center gap-1.5 shadow-xs disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               title="Xuất file CSV kết quả quét"
             >
               <Download className="w-3.5 h-3.5" />
@@ -968,22 +1091,45 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">
-                <th className="py-3 px-3.5 w-12 text-center">STT</th>
-                <th className="py-3 px-3.5 min-w-[140px]">Người đăng</th>
-                <th className="py-3 px-3.5 w-24">Loại</th>
-                <th className="py-3 px-3.5 min-w-[120px]">Tag phát hiện</th>
-                <th className="py-3 px-3.5 min-w-[200px]">Nội dung trích đoạn</th>
-                <th className="py-3 px-3.5 min-w-[140px]">Tương tác</th>
-                <th className="py-3 px-3.5 w-24">Ngày đăng</th>
-                <th className="py-3 px-3.5 min-w-[150px]">Link</th>
-                <th className="py-3 px-3.5 w-28 text-center">Thao tác</th>
+              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider select-none">
+                <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative py-3 px-3.5 text-center border-r border-slate-200 dark:border-slate-800">
+                  STT
+                  <ResizeHandle onMouseDown={(e) => handleColResize('stt', e)} />
+                </th>
+                <th style={{ width: colWidths.author, minWidth: colWidths.author }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                  Người đăng
+                  <ResizeHandle onMouseDown={(e) => handleColResize('author', e)} />
+                </th>
+                <th style={{ width: colWidths.loai, minWidth: colWidths.loai }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                  Loại
+                  <ResizeHandle onMouseDown={(e) => handleColResize('loai', e)} />
+                </th>
+                <th style={{ width: colWidths.preview, minWidth: colWidths.preview }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                  Nội dung trích đoạn
+                  <ResizeHandle onMouseDown={(e) => handleColResize('preview', e)} />
+                </th>
+                <th style={{ width: colWidths.interactions, minWidth: colWidths.interactions }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                  Tương tác
+                  <ResizeHandle onMouseDown={(e) => handleColResize('interactions', e)} />
+                </th>
+                <th style={{ width: colWidths.date, minWidth: colWidths.date }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                  Ngày đăng
+                  <ResizeHandle onMouseDown={(e) => handleColResize('date', e)} />
+                </th>
+                <th style={{ width: colWidths.link, minWidth: colWidths.link }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                  Link
+                  <ResizeHandle onMouseDown={(e) => handleColResize('link', e)} />
+                </th>
+                <th style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="relative py-3 px-3.5 text-center">
+                  Thao tác
+                  <ResizeHandle onMouseDown={(e) => handleColResize('actions', e)} />
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
               {orderedPosts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Users className="w-8 h-8 text-slate-300 dark:text-slate-600" />
                       <p className="font-medium text-xs">Chưa có kết quả quét nào phù hợp.</p>
@@ -996,13 +1142,28 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
               ) : (
                 orderedPosts.map((post) => {
                   const isPostShared = Boolean(post.isShared || post.postType === 'Chia sẻ');
-                  const targetVideoUrl = isPostShared
-                    ? (post.postUrl && post.postUrl !== 'N/A' ? post.postUrl : post.reelUrl)
-                    : (post.reelUrl !== 'N/A'
+                  const linkBaiViet =
+                    post.postUrl && post.postUrl !== 'N/A'
+                      ? post.postUrl
+                      : post.reelUrl && post.reelUrl !== 'N/A'
                       ? post.reelUrl
-                      : post.videoUrl !== 'N/A'
+                      : post.videoUrl && post.videoUrl !== 'N/A'
                       ? post.videoUrl
-                      : post.postUrl);
+                      : '';
+
+                  const rawLinkGoc =
+                    post.reelUrl && post.reelUrl !== 'N/A'
+                      ? post.reelUrl
+                      : post.videoUrl && post.videoUrl !== 'N/A'
+                      ? post.videoUrl
+                      : '';
+
+                  const linkGoc = rawLinkGoc;
+                  const hasSeparateLinkGoc = Boolean(linkGoc && linkGoc !== linkBaiViet);
+
+                  const targetVideoUrl = isPostShared
+                    ? (linkBaiViet || linkGoc)
+                    : (linkGoc || linkBaiViet);
 
                   const isAlreadyTracked = videos.some((v) => {
                     if (isPostShared) {
@@ -1036,16 +1197,12 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                     <tr
                       key={post.id}
                       className={`hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors ${
-                        isPostShared
-                          ? 'bg-indigo-50/30 dark:bg-indigo-950/20'
-                          : post.hasTargetTag
-                          ? 'bg-emerald-500/5'
-                          : ''
+                        post.isChild ? 'bg-indigo-50/30 dark:bg-indigo-950/20' : ''
                       }`}
                     >
                       {/* STT */}
-                      <td className="py-3 px-3.5 text-center font-mono text-[11px]">
-                        {isPostShared ? (
+                      <td style={{ width: colWidths.stt }} className="py-3 px-3.5 text-center font-mono text-[11px] border-r border-slate-100 dark:border-slate-800/50">
+                        {post.isChild ? (
                           <div className="inline-flex items-center justify-center gap-0.5 text-indigo-500 font-bold">
                             <span className="select-none text-xs">↳</span>
                             <span>{post.sttDisplay}</span>
@@ -1056,21 +1213,31 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       </td>
 
                       {/* Author */}
-                      <td className="py-3 px-3.5">
+                      <td style={{ width: colWidths.author }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
                         <div
-                          className={`font-bold truncate max-w-[150px] flex items-center gap-1 ${
-                            isPostShared
+                          className={`font-bold truncate flex items-center gap-1 ${
+                            post.isChild
                               ? 'text-indigo-600 dark:text-indigo-300 font-normal pl-2'
                               : 'text-slate-900 dark:text-white'
                           }`}
                         >
-                          {isPostShared && <span className="text-indigo-400 select-none text-xs">↳</span>}
-                          <span className="truncate">{post.author}</span>
+                          {post.isChild && <span className="text-indigo-400 select-none text-xs">↳</span>}
+                          <span className="truncate" title={post.author}>{post.author}</span>
                         </div>
+                        {post.attachedAuthor && (
+                          <div
+                            className={`text-[11px] text-purple-600 dark:text-purple-400 truncate font-medium ${
+                              post.isChild ? 'pl-4' : ''
+                            }`}
+                            title={`Chia sẻ từ: ${post.attachedAuthor}`}
+                          >
+                            ↳ từ: {post.attachedAuthor}
+                          </div>
+                        )}
                         {post.profileSource && (
                           <div
-                            className={`text-[10px] text-slate-400 truncate max-w-[150px] font-mono ${
-                              isPostShared ? 'pl-4' : ''
+                            className={`text-[10px] text-slate-400 truncate font-mono ${
+                              post.isChild ? 'pl-4' : ''
                             }`}
                           >
                             {post.profileSource.replace('https://www.facebook.com/', '')}
@@ -1079,43 +1246,36 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       </td>
 
                       {/* Loại */}
-                      <td className="py-3 px-3.5">
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                            isPostShared
-                              ? 'bg-purple-50 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-500/30'
-                              : 'bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
-                          }`}
-                        >
-                          {isPostShared ? 'Chia sẻ' : post.postType}
-                        </span>
-                      </td>
-
-                      {/* Tag */}
-                      <td className="py-3 px-3.5">
-                        {post.hasTargetTag ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/40">
-                            <Check className="w-3 h-3" />
-                            {post.taggedName}
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 text-[11px]">
-                            {post.taggedName !== 'N/A' ? post.taggedName : '—'}
-                          </span>
-                        )}
+                      <td style={{ width: colWidths.loai }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
+                        {(() => {
+                          const loai = getPostLoai(post);
+                          const loaiStyle =
+                            loai === 'Chia sẻ'
+                               ? 'bg-purple-50 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-200 dark:border-purple-500/30'
+                              : loai === 'Video'
+                              ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
+                              : loai === 'Hình ảnh'
+                              ? 'bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700';
+                          return (
+                            <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold ${loaiStyle}`}>
+                              {loai}
+                            </span>
+                          );
+                        })()}
                       </td>
 
                       {/* Caption */}
-                      <td className="py-3 px-3.5">
+                      <td style={{ width: colWidths.preview }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
                         <div
                           className={`line-clamp-2 max-w-[280px] flex items-start gap-1 ${
-                            isPostShared
+                            post.isChild
                               ? 'text-slate-600 dark:text-slate-300 pl-2 text-xs font-normal'
                               : 'text-slate-800 dark:text-slate-200 text-xs font-semibold'
                           }`}
                           title={post.textPreview}
                         >
-                          {isPostShared && (
+                          {post.isChild && (
                             <span className="text-indigo-400 select-none text-xs mt-0.5 shrink-0">↳</span>
                           )}
                           <span className="line-clamp-2">{post.textPreview}</span>
@@ -1123,7 +1283,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       </td>
 
                       {/* Interactions */}
-                      <td className="py-3 px-3.5 font-mono text-[11px]">
+                      <td style={{ width: colWidths.interactions }} className="py-3 px-3.5 font-mono text-[11px] border-r border-slate-100 dark:border-slate-800/50">
                         <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
                           <span title="Lượt thích">👍 {post.likesCount}</span>
                           <span title="Bình luận">💬 {post.commentsCount}</span>
@@ -1137,138 +1297,77 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       </td>
 
                       {/* Date */}
-                      <td className="py-3 px-3.5 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap">
+                      <td style={{ width: colWidths.date }} className="py-3 px-3.5 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
                         {post.date}
                       </td>
 
                       {/* Links */}
-                      <td className="py-3 px-3.5">
+                      <td style={{ width: colWidths.link }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
                         <div className="flex flex-col gap-1">
-                          {isPostShared ? (
-                            <>
-                              {/* 1. Link bài chia sẻ (Post Permalink) */}
-                              <div className="flex items-center gap-1.5">
-                                {post.postUrl && post.postUrl !== 'N/A' ? (
-                                  <a
-                                    href={post.postUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="hover:underline flex items-center gap-1 font-mono text-[11px] truncate max-w-[130px] text-purple-600 dark:text-purple-400 font-semibold"
-                                    title={`Mở bài viết chia sẻ: ${post.postUrl}`}
-                                  >
-                                    <ExternalLink className="w-3 h-3 shrink-0" />
-                                    <span>Bài chia sẻ</span>
-                                  </a>
+                          {/* 1. Link bài viết */}
+                          <div className="flex items-center gap-1.5">
+                            {linkBaiViet ? (
+                              <a
+                                href={linkBaiViet}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="hover:underline flex items-center gap-1 font-mono text-[11px] truncate max-w-[130px] text-blue-600 dark:text-blue-400 font-semibold"
+                                title={`Mở link bài viết: ${linkBaiViet}`}
+                              >
+                                <ExternalLink className="w-3 h-3 shrink-0" />
+                                <span>Link bài viết</span>
+                              </a>
+                            ) : (
+                              <span className="text-slate-400 text-[11px]">N/A</span>
+                            )}
+
+                            {linkBaiViet && (
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(linkBaiViet, `post_${post.id}`)}
+                                className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
+                                title="Sao chép link bài viết"
+                              >
+                                {copiedId === `post_${post.id}` ? (
+                                  <Check className="w-3 h-3 text-emerald-500" />
                                 ) : (
-                                  <span className="text-slate-400 text-[11px]">N/A (Bài chia sẻ)</span>
+                                  <Copy className="w-3 h-3" />
                                 )}
+                              </button>
+                            )}
+                          </div>
 
-                                {post.postUrl && post.postUrl !== 'N/A' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCopy(post.postUrl, `post_${post.id}`)}
-                                    className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                                    title="Sao chép link bài chia sẻ (Permalink)"
-                                  >
-                                    {copiedId === `post_${post.id}` ? (
-                                      <Check className="w-3 h-3 text-emerald-500" />
-                                    ) : (
-                                      <Copy className="w-3 h-3" />
-                                    )}
-                                  </button>
+                          {/* 2. Link gốc (chỉ hiện khi có nguồn video/reel gốc khác bài viết) */}
+                          {hasSeparateLinkGoc && (
+                            <div className="flex items-center gap-1 text-[10px] pl-0.5">
+                              <a
+                                href={linkGoc}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-slate-500 dark:text-slate-400 hover:text-blue-500 hover:underline flex items-center gap-0.5 truncate max-w-[120px]"
+                                title={`Mở link gốc: ${linkGoc}`}
+                              >
+                                <span>↳ Link gốc</span>
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(linkGoc, `origin_${post.id}`)}
+                                className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
+                                title="Sao chép link gốc"
+                              >
+                                {copiedId === `origin_${post.id}` ? (
+                                  <Check className="w-2.5 h-2.5 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-2.5 h-2.5" />
                                 )}
-                              </div>
-
-                              {/* 2. Link video/Reel gốc */}
-                              {post.reelUrl && post.reelUrl !== 'N/A' ? (
-                                <div className="flex items-center gap-1 text-[10px] pl-0.5">
-                                  <a
-                                    href={post.reelUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-slate-500 dark:text-slate-400 hover:text-blue-500 hover:underline flex items-center gap-0.5 truncate max-w-[120px]"
-                                    title={`Video/Reel gốc: ${post.reelUrl}`}
-                                  >
-                                    <span>↳ Reel gốc</span>
-                                  </a>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCopy(post.reelUrl, `reel_${post.id}`)}
-                                    className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                                    title="Sao chép link Reel gốc"
-                                  >
-                                    {copiedId === `reel_${post.id}` ? (
-                                      <Check className="w-2.5 h-2.5 text-emerald-500" />
-                                    ) : (
-                                      <Copy className="w-2.5 h-2.5" />
-                                    )}
-                                  </button>
-                                </div>
-                              ) : post.videoUrl && post.videoUrl !== 'N/A' && post.videoUrl !== post.postUrl ? (
-                                <div className="flex items-center gap-1 text-[10px] pl-0.5">
-                                  <a
-                                    href={post.videoUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-slate-500 dark:text-slate-400 hover:text-blue-500 hover:underline flex items-center gap-0.5 truncate max-w-[120px]"
-                                    title={`Video gốc: ${post.videoUrl}`}
-                                  >
-                                    <span>↳ Video gốc</span>
-                                  </a>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleCopy(post.videoUrl, `reel_${post.id}`)}
-                                    className="p-0.5 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                                    title="Sao chép link Video gốc"
-                                  >
-                                    {copiedId === `reel_${post.id}` ? (
-                                      <Check className="w-2.5 h-2.5 text-emerald-500" />
-                                    ) : (
-                                      <Copy className="w-2.5 h-2.5" />
-                                    )}
-                                  </button>
-                                </div>
-                              ) : null}
-                            </>
-                          ) : (
-                            /* Bài đăng gốc (FB Reel) */
-                            <div className="flex items-center gap-1.5">
-                              {targetVideoUrl && targetVideoUrl !== 'N/A' ? (
-                                <a
-                                  href={targetVideoUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="hover:underline flex items-center gap-1 font-mono text-[11px] truncate max-w-[130px] text-blue-600 dark:text-blue-400 font-semibold"
-                                  title={`Link Reel: ${targetVideoUrl}`}
-                                >
-                                  <ExternalLink className="w-3 h-3 shrink-0" />
-                                  <span>Reel/Video</span>
-                                </a>
-                              ) : (
-                                <span className="text-slate-400 text-[11px]">N/A</span>
-                              )}
-
-                              {targetVideoUrl && targetVideoUrl !== 'N/A' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopy(targetVideoUrl, post.id)}
-                                  className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                                  title="Sao chép link video"
-                                >
-                                  {copiedId === post.id ? (
-                                    <Check className="w-3 h-3 text-emerald-500" />
-                                  ) : (
-                                    <Copy className="w-3 h-3" />
-                                  )}
-                                </button>
-                              )}
+                              </button>
                             </div>
                           )}
                         </div>
                       </td>
 
                       {/* Action */}
-                      <td className="py-3 px-3.5 text-center">
+                      <td style={{ width: colWidths.actions }} className="py-3 px-3.5 text-center">
                         {isAdmin && onAddVideo && targetVideoUrl && targetVideoUrl !== 'N/A' ? (
                           <button
                             type="button"

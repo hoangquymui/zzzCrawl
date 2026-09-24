@@ -156,7 +156,7 @@ export const UsersPage: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-slate-900 dark:text-white">
-                  Quản Lý Người Dùng &amp; Phân Quyền
+                  Quản Lý Tài Khoản &amp; Phân Quyền
                 </h2>
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
                   Admin Only
@@ -189,7 +189,7 @@ export const UsersPage: React.FC = () => {
             className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition flex items-center gap-2 cursor-pointer shadow-xs"
           >
             <UserPlus className="w-3.5 h-3.5" />
-            <span>Thêm người dùng</span>
+            <span>Thêm tài khoản</span>
           </button>
         </div>
       </div>

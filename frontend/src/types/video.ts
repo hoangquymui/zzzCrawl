@@ -4,6 +4,8 @@ export interface VideoItem {
   caption: string;
   loai: string;
   nguoiDang: string;
+  authorUid?: string;
+  authorUrl?: string;
   ngayDang: string;
   SoLuongNguoiShare: number;
   LuotXem: number;
@@ -11,6 +13,10 @@ export interface VideoItem {
   LuotComment: number;
   lastUpdated?: string;
   postId?: string;
+  isShared?: boolean;
+  originalAuthor?: string;
+  originalAuthorUrl?: string;
+  originalPostUrl?: string;
 }
 
 export interface DailyStat {

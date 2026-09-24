@@ -2,6 +2,7 @@
 title Video Tracker Realtime - Server
 chcp 65001 >nul
 cls
+set PORT=3333
 echo ======================================================
 echo    HE THONG THEO DOI VIDEO REALTIME (DEPLOY PACK)
 echo ======================================================

@@ -22,6 +22,7 @@
     "@nestjs/schedule": "^4.1.2",
     "@nestjs/serve-static": "^4.0.2",
     "@nestjs/websockets": "^10.4.15",
+    "better-sqlite3": "^13.0.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "express": "^4.22.2",
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
     "@nestjs/schematics": "^10.2.3",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.1",
     "source-map-support": "^0.5.21",

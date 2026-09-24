@@ -6,29 +6,67 @@ import {
   Inject,
   forwardRef,
   OnModuleInit,
+  OnModuleDestroy,
 } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
 import { VideoItem } from './interfaces/video.interface';
 import { StorageService } from './storage.service';
 import { ScraperService } from './scraper.service';
 import { VideosGateway } from './videos.gateway';
+import { DatabaseService } from '../database/database.service';
 
 @Injectable()
-export class VideosService implements OnModuleInit {
+export class VideosService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(VideosService.name);
   private trackedVideos: VideoItem[] = [];
   private isRefreshingAll = false;
+  private autoRefreshTimer: NodeJS.Timeout | null = null;
+  private autoRefreshMinutes = 3;
 
   constructor(
     private readonly storageService: StorageService,
     private readonly scraperService: ScraperService,
     @Inject(forwardRef(() => VideosGateway))
-    private readonly videosGateway: VideosGateway
+    private readonly videosGateway: VideosGateway,
+    private readonly db: DatabaseService
   ) {}
 
   public onModuleInit(): void {
     this.trackedVideos = this.storageService.loadVideos();
+    let hasChanges = false;
+    for (const v of this.trackedVideos) {
+      const clean = this.scraperService.sanitizeUrl(v.link);
+      if (clean && clean !== v.link) {
+        v.link = clean;
+        hasChanges = true;
+      }
+      if (v.originalPostUrl) {
+        const cleanOrig = this.scraperService.sanitizeUrl(v.originalPostUrl);
+        if (cleanOrig && cleanOrig !== v.originalPostUrl) {
+          v.originalPostUrl = cleanOrig;
+          hasChanges = true;
+        }
+      }
+      if (!v.caption || !v.caption.trim() || this.scraperService.isBoilerplateCaption(v.caption)) {
+        if (v.caption !== 'Không có tiêu đề') {
+          v.caption = 'Không có tiêu đề';
+          hasChanges = true;
+        }
+      }
+    }
+    if (hasChanges) {
+      this.storageService.saveVideos(this.trackedVideos);
+      this.logger.log(`Đã chuẩn hóa và làm gọn link cho các video trong database.`);
+    }
     this.logger.log(`Đã tải ${this.trackedVideos.length} video từ bộ nhớ lưu trữ.`);
+
+    const saved = this.db.getSetting('auto_refresh_minutes');
+    const parsed = saved ? parseInt(saved, 10) : 3;
+    this.autoRefreshMinutes = !isNaN(parsed) && parsed >= 3 ? parsed : 3;
+    this.startAutoRefreshTimer();
+  }
+
+  public onModuleDestroy(): void {
+    this.stopAutoRefreshTimer();
   }
 
   public getVideos(): VideoItem[] {
@@ -56,6 +94,34 @@ export class VideosService implements OnModuleInit {
 
     const data = await this.scraperService.scrapeVideo(cleanUrl, nextSTT);
     data.lastUpdated = new Date().toISOString();
+
+    // Đảm bảo data.link luôn là URL đích cuối cùng gọn nhất
+    let finalLink = data.link ? this.scraperService.sanitizeUrl(data.link) : cleanUrl;
+    if (
+      finalLink.includes('/share/') ||
+      finalLink.includes('fb.watch') ||
+      finalLink.includes('/t/') ||
+      finalLink.includes('vt.tiktok.com') ||
+      finalLink.includes('vm.tiktok.com')
+    ) {
+      try {
+        finalLink = await this.scraperService.resolveFinalUrl(finalLink);
+      } catch {}
+    }
+    data.link = this.scraperService.sanitizeUrl(finalLink);
+    if (data.originalPostUrl) {
+      data.originalPostUrl = this.scraperService.sanitizeUrl(data.originalPostUrl);
+    }
+
+    // Nếu link chuyển hướng (ví dụ share link sang reel URL), kiểm tra tiếp xem URL mới đã có chưa
+    if (data.link && data.link !== cleanUrl) {
+      const existingByResolvedUrl = this.trackedVideos.find((v) => v.link === data.link);
+      if (existingByResolvedUrl) {
+        throw new BadRequestException(
+          `Video này đã có trong danh sách theo dõi (trùng với STT ${existingByResolvedUrl.STT})!`
+        );
+      }
+    }
 
     // 2. Kiểm tra trùng lặp nâng cao (postId duy nhất hoặc bộ ba Caption + Người đăng + Ngày đăng)
     const existingDuplicate = this.trackedVideos.find((v) => {
@@ -100,16 +166,30 @@ export class VideosService implements OnModuleInit {
     this.videosGateway.emitCrawlStatus(`Đang cập nhật video STT ${stt}...`, video.link);
 
     const freshData = await this.scraperService.scrapeVideo(video.link, stt);
-    freshData.lastUpdated = new Date().toISOString();
+    const resolvedLink = this.scraperService.sanitizeUrl(freshData.link || video.link);
+    const updatedVideo: VideoItem = {
+      ...video,
+      ...freshData,
+      link: resolvedLink,
+      caption: freshData.caption || video.caption,
+      nguoiDang: freshData.nguoiDang || video.nguoiDang,
+      isShared: freshData.isShared !== undefined ? freshData.isShared : video.isShared,
+      originalAuthor: freshData.originalAuthor || video.originalAuthor,
+      originalAuthorUrl: freshData.originalAuthorUrl || video.originalAuthorUrl,
+      originalPostUrl: freshData.originalPostUrl
+        ? this.scraperService.sanitizeUrl(freshData.originalPostUrl)
+        : video.originalPostUrl ? this.scraperService.sanitizeUrl(video.originalPostUrl) : undefined,
+      lastUpdated: new Date().toISOString(),
+    };
 
     const idx = this.trackedVideos.findIndex((v) => v.STT === stt);
     if (idx !== -1) {
-      this.trackedVideos[idx] = freshData;
+      this.trackedVideos[idx] = updatedVideo;
       this.storageService.saveVideos(this.trackedVideos);
-      this.videosGateway.emitVideoUpdated(freshData);
+      this.videosGateway.emitVideoUpdated(updatedVideo);
     }
 
-    return freshData;
+    return updatedVideo;
   }
 
   public deleteVideo(stt: number): boolean {
@@ -154,13 +234,27 @@ export class VideosService implements OnModuleInit {
         );
 
         const freshData = await this.scraperService.scrapeVideo(item.link, item.STT);
-        freshData.lastUpdated = new Date().toISOString();
+        const resolvedLink = this.scraperService.sanitizeUrl(freshData.link || item.link);
+        const mergedVideo: VideoItem = {
+          ...item,
+          ...freshData,
+          link: resolvedLink,
+          caption: freshData.caption || item.caption,
+          nguoiDang: freshData.nguoiDang || item.nguoiDang,
+          isShared: freshData.isShared !== undefined ? freshData.isShared : item.isShared,
+          originalAuthor: freshData.originalAuthor || item.originalAuthor,
+          originalAuthorUrl: freshData.originalAuthorUrl || item.originalAuthorUrl,
+          originalPostUrl: freshData.originalPostUrl
+            ? this.scraperService.sanitizeUrl(freshData.originalPostUrl)
+            : item.originalPostUrl ? this.scraperService.sanitizeUrl(item.originalPostUrl) : undefined,
+          lastUpdated: new Date().toISOString(),
+        };
 
         const idx = this.trackedVideos.findIndex((v) => v.STT === item.STT);
         if (idx !== -1) {
-          this.trackedVideos[idx] = freshData;
+          this.trackedVideos[idx] = mergedVideo;
           this.storageService.saveVideos(this.trackedVideos);
-          this.videosGateway.emitVideoUpdated(freshData);
+          this.videosGateway.emitVideoUpdated(mergedVideo);
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -197,11 +291,45 @@ export class VideosService implements OnModuleInit {
     return this.isRefreshingAll;
   }
 
-  // Quét tự động định kỳ mỗi 3 phút bằng NestJS Schedule Interval
-  @Interval(3 * 60 * 1000)
-  public handleAutoRefreshInterval(): void {
+  public getAutoRefreshMinutes(): number {
+    return this.autoRefreshMinutes;
+  }
+
+  public setAutoRefreshMinutes(minutes: number): void {
+    if (!minutes || minutes < 3) {
+      throw new BadRequestException('Chu kỳ quét tự động tối thiểu phải từ 3 phút trở lên!');
+    }
+    this.autoRefreshMinutes = minutes;
+    this.db.setSetting('auto_refresh_minutes', String(minutes));
+    this.logger.log(`[Cấu hình] Đã cập nhật chu kỳ quét video tự động thành ${minutes} phút.`);
+    this.startAutoRefreshTimer();
+  }
+
+  private startAutoRefreshTimer(): void {
+    this.stopAutoRefreshTimer();
+    const intervalMs = this.autoRefreshMinutes * 60 * 1000;
+    this.logger.log(`[Hệ thống] Bắt đầu hẹn giờ quét video tự động mỗi ${this.autoRefreshMinutes} phút.`);
+    this.autoRefreshTimer = setInterval(() => {
+      this.handleAutoRefresh();
+    }, intervalMs);
+  }
+
+  private stopAutoRefreshTimer(): void {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
+    }
+  }
+
+  public handleAutoRefresh(): void {
     if (this.trackedVideos.length > 0 && !this.isRefreshingAll) {
+      this.logger.log(`[Tự động] Kích hoạt làm mới video định kỳ (chu kỳ ${this.autoRefreshMinutes} phút)...`);
       this.refreshAllVideosBatch('Tự động định kỳ', 'all');
     }
+  }
+
+  public reloadVideos(): void {
+    this.trackedVideos = this.storageService.loadVideos();
+    this.logger.log(`[Videos] Đã nạp lại ${this.trackedVideos.length} video sau khi thay đổi CSDL.`);
   }
 }

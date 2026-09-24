@@ -5,11 +5,14 @@ import {
   Delete,
   Body,
   Param,
+  Res,
   HttpCode,
   HttpStatus,
   BadRequestException,
   UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as fs from 'fs';
 import { ProfileManagementService } from './profile-management.service';
 import { CrawlProfilesDto } from './dto/profile-management.dto';
 import { RolesGuard, Roles } from '../auth/roles.guard';
@@ -17,6 +20,17 @@ import { RolesGuard, Roles } from '../auth/roles.guard';
 @Controller('profile-management')
 export class ProfileManagementController {
   constructor(private readonly profileManagementService: ProfileManagementService) {}
+
+  @Get('avatar/:uid')
+  public async getAvatar(@Param('uid') uid: string, @Res() res: Response) {
+    const filePath = await this.profileManagementService.getAvatarFilePath(uid);
+    if (filePath && fs.existsSync(filePath)) {
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.sendFile(filePath);
+    }
+    return res.status(HttpStatus.NOT_FOUND).send('Avatar not found');
+  }
 
   @Get('state')
   public getState() {

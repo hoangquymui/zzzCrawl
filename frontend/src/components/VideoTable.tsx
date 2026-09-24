@@ -18,6 +18,8 @@ import {
   FileText,
   Layers,
   Check,
+  Repeat,
+  Sparkles,
 } from "lucide-react";
 import { BatchProgress, VideoItem } from "../types/video";
 import { formatNumber } from "../utils/formatters";
@@ -25,6 +27,9 @@ import { exportVideosToExcel } from "../utils/exportExcel";
 import { exportVideosToCSV } from "../utils/exportCsv";
 import { FacebookIcon, TikTokIcon } from "./Icons";
 import { DateRangePicker } from "./DateRangePicker";
+import { useResizableColumns } from "../hooks/useResizableColumns";
+import { ResizeHandle } from "./ResizeHandle";
+import { QuickPreviewCard } from "./QuickPreviewCard";
 
 interface VideoTableProps {
   videos: VideoItem[];
@@ -57,6 +62,65 @@ export const VideoTable: React.FC<VideoTableProps> = ({
   // Phân trang
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(10);
+
+  // Quick Preview Hover Card
+  const [hoveredVideo, setHoveredVideo] = useState<VideoItem | null>(null);
+  const [previewPos, setPreviewPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const hoverTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleRowMouseEnter = (video: VideoItem, e: React.MouseEvent) => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+    }
+
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+
+    // Tự động tính toán toạ độ để card không bị tràn màn hình
+    const cardWidth = 384; // w-96 = 24rem = 384px
+    const cardHeight = 360; // ước lượng chiều cao tối đa card
+
+    let left = clientX + 15;
+    if (left + cardWidth > window.innerWidth - 20) {
+      left = Math.max(10, clientX - cardWidth - 15);
+    }
+
+    let top = clientY - 40;
+    if (top + cardHeight > window.innerHeight - 20) {
+      top = Math.max(10, window.innerHeight - cardHeight - 20);
+    }
+    if (top < 10) top = 10;
+
+    hoverTimerRef.current = setTimeout(() => {
+      setPreviewPos({ top, left });
+      setHoveredVideo(video);
+    }, 180);
+  };
+
+  const handleRowMouseLeave = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+    }
+    setHoveredVideo(null);
+  };
+
+  // Kéo giãn độ rộng các cột của bảng
+  const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
+    {
+      stt: 50,
+      link: 180,
+      caption: 220,
+      loai: 110,
+      nguoiDang: 130,
+      ngayDang: 110,
+      share: 95,
+      view: 105,
+      like: 95,
+      comment: 95,
+      actions: 95,
+    },
+    'video_table'
+  );
 
   // Trạng thái menu xổ xuất dữ liệu
   const [isExportOpen, setIsExportOpen] = useState(false);
@@ -500,20 +564,51 @@ export const VideoTable: React.FC<VideoTableProps> = ({
       <div className="overflow-x-auto">
         <table className="w-full text-xs text-left border-collapse">
           <thead>
-            <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/70 text-slate-600 dark:text-slate-400 uppercase font-semibold tracking-wider text-[11px]">
-              <th className="w-12 px-2 py-3 text-center shrink-0">STT</th>
-              <th className="py-3 px-2.5 w-36 min-w-[120px]">Link</th>
-              <th className="py-3 px-2.5 min-w-[160px]">Caption</th>
-              <th className="py-3 px-2.5 w-28 text-center shrink-0">Loại</th>
-              <th className="py-3 px-2.5 w-32 shrink-0">Người Đăng</th>
-              <th className="py-3 px-2.5 w-28 shrink-0">Ngày Đăng</th>
-              <th className="w-20 px-2 py-3 text-right shrink-0">Lượt Share</th>
-              <th className="w-24 px-2 py-3 text-right shrink-0">Lượt Xem</th>
-              <th className="w-20 px-2 py-3 text-right shrink-0">Lượt Like</th>
-              <th className="w-20 px-2 py-3 text-right shrink-0">Bình Luận</th>
+            <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/70 text-slate-600 dark:text-slate-400 uppercase font-semibold tracking-wider text-[11px] select-none">
+              <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative px-2 py-3 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
+                STT
+                <ResizeHandle onMouseDown={(e) => handleColResize('stt', e)} />
+              </th>
+              <th style={{ width: colWidths.link, minWidth: colWidths.link }} className="relative py-3 px-2.5 border-r border-slate-200 dark:border-slate-800">
+                Link
+                <ResizeHandle onMouseDown={(e) => handleColResize('link', e)} />
+              </th>
+              <th style={{ width: colWidths.caption, minWidth: colWidths.caption }} className="relative py-3 px-2.5 border-r border-slate-200 dark:border-slate-800">
+                Caption
+                <ResizeHandle onMouseDown={(e) => handleColResize('caption', e)} />
+              </th>
+              <th style={{ width: colWidths.loai, minWidth: colWidths.loai }} className="relative py-3 px-2.5 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Loại
+                <ResizeHandle onMouseDown={(e) => handleColResize('loai', e)} />
+              </th>
+              <th style={{ width: colWidths.nguoiDang, minWidth: colWidths.nguoiDang }} className="relative py-3 px-2.5 shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Người Đăng
+                <ResizeHandle onMouseDown={(e) => handleColResize('nguoiDang', e)} />
+              </th>
+              <th style={{ width: colWidths.ngayDang, minWidth: colWidths.ngayDang }} className="relative py-3 px-2.5 shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Ngày Đăng
+                <ResizeHandle onMouseDown={(e) => handleColResize('ngayDang', e)} />
+              </th>
+              <th style={{ width: colWidths.share, minWidth: colWidths.share }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Lượt Share
+                <ResizeHandle onMouseDown={(e) => handleColResize('share', e)} />
+              </th>
+              <th style={{ width: colWidths.view, minWidth: colWidths.view }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Lượt Xem
+                <ResizeHandle onMouseDown={(e) => handleColResize('view', e)} />
+              </th>
+              <th style={{ width: colWidths.like, minWidth: colWidths.like }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Lượt Like
+                <ResizeHandle onMouseDown={(e) => handleColResize('like', e)} />
+              </th>
+              <th style={{ width: colWidths.comment, minWidth: colWidths.comment }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Bình Luận
+                <ResizeHandle onMouseDown={(e) => handleColResize('comment', e)} />
+              </th>
               {canManage && (
-                <th className="w-20 px-2 py-3 text-center shrink-0">
+                <th style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="relative px-2 py-3 text-center shrink-0">
                   Thao Tác
+                  <ResizeHandle onMouseDown={(e) => handleColResize('actions', e)} />
                 </th>
               )}
             </tr>
@@ -521,10 +616,6 @@ export const VideoTable: React.FC<VideoTableProps> = ({
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800/80">
             {paginatedVideos.map((v) => {
               const isFB = (v.loai || "").includes("Facebook");
-              const badgeColor = isFB
-                ? "bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-500/20"
-                : "bg-pink-50 dark:bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-200 dark:border-pink-500/20";
-
               const isUpdated = updatedRowStt === v.STT;
               const isRefreshing = refreshingStt === v.STT;
               const isDeleting = deletingStt === v.STT;
@@ -537,89 +628,168 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                   }`}
                 >
                   {/* STT */}
-                  <td className="py-2.5 px-2 text-center font-bold text-slate-700 dark:text-slate-300">
+                  <td style={{ width: colWidths.stt }} className="py-2.5 px-2 text-center font-bold text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60">
                     {v.STT}
                   </td>
 
                   {/* Link */}
-                  <td className="py-2.5 px-2.5">
-                    <a
-                      href={v.link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium truncate max-w-[140px] inline-flex items-center gap-1.5 transition"
-                      title={v.link}
-                    >
-                      <ExternalLink className="w-3 h-3 text-blue-500 shrink-0 dark:text-blue-400" />
-                      <span className="truncate">
-                        {v.link.replace(/^https?:\/\/(www\.)?/, "")}
-                      </span>
-                    </a>
-                  </td>
+                  <td
+                    style={{ width: colWidths.link, minWidth: colWidths.link, maxWidth: colWidths.link }}
+                    className="py-2.5 px-2.5 border-r border-slate-100 dark:border-slate-800/60 overflow-hidden"
+                    onMouseEnter={(e) => handleRowMouseEnter(v, e)}
+                    onMouseLeave={handleRowMouseLeave}
+                  >
+                    <div className="w-full min-w-0 overflow-hidden">
+                      <a
+                        href={v.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium inline-flex items-center gap-1.5 transition w-full min-w-0"
+                        title={v.link}
+                      >
+                        <ExternalLink className="w-3 h-3 text-blue-500 shrink-0 dark:text-blue-400" />
+                        <span className="truncate flex-1 min-w-0 block">
+                          {v.link.replace(/^https?:\/\/(www\.)?/, "")}
+                        </span>
+                      </a>
 
-                  {/* Caption */}
-                  <td className="py-2.5 px-2.5 text-slate-800 dark:text-slate-200">
-                    <div
-                      className="leading-relaxed line-clamp-2"
-                      title={v.caption || ""}
-                    >
-                      {v.caption || "(Không có tiêu đề)"}
+                      {/* Link bài gốc nếu là bài chia sẻ */}
+                      {v.isShared && v.originalPostUrl && (
+                        <div className="mt-1 w-full min-w-0 overflow-hidden">
+                          <a
+                            href={v.originalPostUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[10px] text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 inline-flex items-center gap-1 font-normal hover:underline w-full min-w-0"
+                            title={`Bài viết gốc: ${v.originalPostUrl}`}
+                          >
+                            <Repeat className="w-2.5 h-2.5 shrink-0" />
+                            <span className="truncate flex-1 min-w-0 block">
+                              Gốc: {v.originalPostUrl.replace(/^https?:\/\/(www\.)?/, "")}
+                            </span>
+                            <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                          </a>
+                        </div>
+                      )}
                     </div>
                   </td>
 
-                  {/* Loại */}
-                  <td className="py-2.5 px-2.5 text-center whitespace-nowrap">
-                    <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${badgeColor}`}
+                  {/* Caption */}
+                  <td
+                    style={{ width: colWidths.caption, minWidth: colWidths.caption, maxWidth: colWidths.caption }}
+                    className="py-2.5 px-2.5 text-slate-800 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800/60 cursor-pointer overflow-hidden"
+                    onMouseEnter={(e) => handleRowMouseEnter(v, e)}
+                    onMouseLeave={handleRowMouseLeave}
+                  >
+                    <div
+                      className={`leading-relaxed line-clamp-2 transition-colors w-full min-w-0 break-words ${
+                        v.caption && v.caption.trim() && v.caption !== "Không có tiêu đề"
+                          ? "hover:text-blue-600 dark:hover:text-blue-400 text-slate-800 dark:text-slate-200"
+                          : "italic text-slate-400 dark:text-slate-500"
+                      }`}
+                      title={v.caption && v.caption.trim() ? v.caption : "Không có tiêu đề"}
                     >
-                      {isFB ? (
-                        <FacebookIcon className="w-3 h-3 shrink-0" />
+                      {v.caption && v.caption.trim() ? v.caption : "Không có tiêu đề"}
+                    </div>
+                  </td>
+
+                  {/* Loại & Badge Phân Loại */}
+                  <td style={{ width: colWidths.loai, minWidth: colWidths.loai, maxWidth: colWidths.loai }} className="py-2 px-2 text-center whitespace-nowrap border-r border-slate-100 dark:border-slate-800/60">
+                    <div className="flex flex-col items-center justify-center gap-1">
+                      {/* Badge Nền tảng: Đổi toàn bộ về Facebook hoặc TikTok */}
+                      <span
+                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                          isFB
+                            ? "bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-500/20"
+                            : "bg-pink-50 dark:bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-200 dark:border-pink-500/20"
+                        }`}
+                      >
+                        {isFB ? (
+                          <FacebookIcon className="w-3 h-3 shrink-0" />
+                        ) : (
+                          <TikTokIcon className="w-3 h-3 shrink-0" />
+                        )}
+                        <span>{isFB ? "Facebook" : "TikTok"}</span>
+                      </span>
+
+                      {/* Badge Nguồn gốc: Bài gốc hay Chia sẻ */}
+                      {v.isShared ? (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20">
+                          <Repeat className="w-2.5 h-2.5 shrink-0" />
+                          <span>Chia sẻ</span>
+                        </span>
                       ) : (
-                        <TikTokIcon className="w-3 h-3 shrink-0" />
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20">
+                          <Sparkles className="w-2.5 h-2.5 shrink-0" />
+                          <span>Bài gốc</span>
+                        </span>
                       )}
-                      <span>{isFB ? "FB Video" : "TikTok"}</span>
-                    </span>
+                    </div>
                   </td>
 
                   {/* Người Đăng */}
                   <td
-                    className="py-2.5 px-2.5 font-medium text-slate-800 dark:text-slate-200 truncate max-w-[120px]"
-                    title={v.nguoiDang || "N/A"}
+                    style={{ width: colWidths.nguoiDang, minWidth: colWidths.nguoiDang, maxWidth: colWidths.nguoiDang }}
+                    className="py-2.5 px-2.5 font-medium text-slate-800 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800/60 overflow-hidden"
                   >
-                    {v.nguoiDang || "N/A"}
+                    <div className="w-full min-w-0 overflow-hidden">
+                      <div className="truncate w-full min-w-0 block" title={v.nguoiDang || "N/A"}>
+                        {v.nguoiDang || "N/A"}
+                      </div>
+                      {v.isShared && v.originalAuthor && (
+                        <div className="text-[10px] text-amber-600 dark:text-amber-400/90 truncate w-full min-w-0 flex items-center gap-0.5 mt-0.5 font-normal">
+                          <Repeat className="w-2.5 h-2.5 shrink-0" />
+                          {v.originalPostUrl ? (
+                            <a
+                              href={v.originalPostUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:underline truncate flex-1 min-w-0 inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400 font-medium"
+                              title={`Mở bài gốc: ${v.originalPostUrl}`}
+                            >
+                              <span className="truncate flex-1 min-w-0 block">Gốc: {v.originalAuthor}</span>
+                              <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                            </a>
+                          ) : (
+                            <span className="truncate flex-1 min-w-0 block">Gốc: {v.originalAuthor}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </td>
 
                   {/* Ngày Đăng */}
                   <td
-                    className="py-2.5 px-2.5 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap"
+                    style={{ width: colWidths.ngayDang, minWidth: colWidths.ngayDang, maxWidth: colWidths.ngayDang }}
+                    className="py-2.5 px-2.5 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap border-r border-slate-100 dark:border-slate-800/60"
                     title={v.ngayDang || "N/A"}
                   >
                     {v.ngayDang ? v.ngayDang.slice(0, 10) : "N/A"}
                   </td>
 
                   {/* Lượt Share */}
-                  <td className="py-2.5 px-2 text-right font-mono font-medium text-slate-700 dark:text-slate-300">
+                  <td style={{ width: colWidths.share, minWidth: colWidths.share, maxWidth: colWidths.share }} className="py-2.5 px-2 text-right font-mono font-medium text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60">
                     {formatNumber(v.SoLuongNguoiShare)}
                   </td>
 
                   {/* Lượt Xem */}
-                  <td className="py-2.5 px-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  <td style={{ width: colWidths.view, minWidth: colWidths.view, maxWidth: colWidths.view }} className="py-2.5 px-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 border-r border-slate-100 dark:border-slate-800/60">
                     {formatNumber(v.LuotXem)}
                   </td>
 
                   {/* Lượt Like */}
-                  <td className="py-2.5 px-2 text-right font-mono font-bold text-pink-600 dark:text-pink-400">
+                  <td style={{ width: colWidths.like, minWidth: colWidths.like, maxWidth: colWidths.like }} className="py-2.5 px-2 text-right font-mono font-bold text-pink-600 dark:text-pink-400 border-r border-slate-100 dark:border-slate-800/60">
                     {formatNumber(v.LuotLike)}
                   </td>
 
                   {/* Bình Luận */}
-                  <td className="py-2.5 px-2 text-right font-mono font-bold text-amber-600 dark:text-amber-400">
+                  <td style={{ width: colWidths.comment, minWidth: colWidths.comment, maxWidth: colWidths.comment }} className="py-2.5 px-2 text-right font-mono font-bold text-amber-600 dark:text-amber-400 border-r border-slate-100 dark:border-slate-800/60">
                     {formatNumber(v.LuotComment)}
                   </td>
 
                   {/* Thao Tác */}
                   {canManage && (
-                    <td className="py-2.5 px-2 text-center whitespace-nowrap">
+                    <td style={{ width: colWidths.actions, minWidth: colWidths.actions, maxWidth: colWidths.actions }} className="py-2.5 px-2 text-center whitespace-nowrap">
                       <div className="inline-flex items-center gap-1.5">
                         <button
                           onClick={() => handleRefreshSingle(v.STT)}
@@ -793,6 +963,11 @@ export const VideoTable: React.FC<VideoTableProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {/* Quick Preview Card khi rê chuột */}
+      {hoveredVideo && (
+        <QuickPreviewCard video={hoveredVideo} position={previewPos} />
       )}
     </div>
   );

@@ -11,10 +11,6 @@ export class StartScanDto {
   profileUrl?: string;
 
   @IsOptional()
-  @IsString()
-  targetTag?: string;
-
-  @IsOptional()
   @IsNumber()
   maxScrolls?: number;
 

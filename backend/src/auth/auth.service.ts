@@ -1,4 +1,5 @@
 import { Injectable, UnauthorizedException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { DatabaseService } from '../database/database.service';
 
 export interface UserPayload {
   id: string;
@@ -9,46 +10,17 @@ export interface UserPayload {
 
 @Injectable()
 export class AuthService {
-  // Danh sách tài khoản mặc định
-  private users: Array<UserPayload & { password: string }> = [
-    {
-      id: 'usr_admin_01',
-      username: 'admin',
-      name: 'Quản trị viên',
-      role: 'admin',
-      password: 'admin',
-    },
-    {
-      id: 'usr_admin_02',
-      username: 'admin123',
-      name: 'Quản trị viên',
-      role: 'admin',
-      password: 'admin',
-    },
-    {
-      id: 'usr_user_01',
-      username: 'user',
-      name: 'Người xem (User)',
-      role: 'user',
-      password: 'user',
-    },
-    {
-      id: 'usr_user_02',
-      username: 'user123',
-      name: 'Người xem (User)',
-      role: 'user',
-      password: 'user',
-    },
-  ];
-
   // Token cache đơn giản in-memory: token -> UserPayload
   private readonly tokenStore = new Map<string, UserPayload>();
+
+  constructor(private readonly db: DatabaseService) {}
 
   public validateUser(username: string, pass: string): UserPayload {
     const cleanUser = (username || '').trim().toLowerCase();
     const cleanPass = (pass || '').trim();
 
-    const matched = this.users.find(
+    const users = this.db.getAllUsers();
+    const matched = users.find(
       (u) =>
         u.username.toLowerCase() === cleanUser ||
         (cleanUser === 'admin' && (u.username === 'admin' || u.username === 'admin123')) ||
@@ -123,7 +95,7 @@ export class AuthService {
   }
 
   public getUsers(): UserPayload[] {
-    return this.users.map(({ id, username, name, role }) => ({ id, username, name, role }));
+    return this.db.getAllUsers().map(({ id, username, name, role }) => ({ id, username, name, role }));
   }
 
   public createUser(dto: { username: string; name?: string; role: 'admin' | 'user'; password: string }): UserPayload {
@@ -134,7 +106,9 @@ export class AuthService {
     if (!dto.password || !dto.password.trim()) {
       throw new BadRequestException('Mật khẩu không được để trống.');
     }
-    if (this.users.some((u) => u.username.toLowerCase() === cleanUser)) {
+
+    const existing = this.db.getUserByUsername(cleanUser);
+    if (existing) {
       throw new BadRequestException(`Tài khoản "${dto.username}" đã tồn tại trên hệ thống.`);
     }
 
@@ -146,7 +120,7 @@ export class AuthService {
       password: dto.password.trim(),
     };
 
-    this.users.push(newUser);
+    this.db.upsertUser(newUser);
     return {
       id: newUser.id,
       username: newUser.username,
@@ -156,14 +130,14 @@ export class AuthService {
   }
 
   public deleteUser(id: string): boolean {
-    const idx = this.users.findIndex((u) => u.id === id);
-    if (idx === -1) {
+    const user = this.db.getUserById(id);
+    if (!user) {
       throw new NotFoundException('Không tìm thấy tài khoản người dùng.');
     }
-    if (this.users[idx].id === 'usr_admin_01' || this.users[idx].username === 'admin') {
+    if (user.id === 'usr_admin_01' || user.username === 'admin') {
       throw new BadRequestException('Không thể xoá tài khoản Quản trị viên mặc định (admin).');
     }
-    this.users.splice(idx, 1);
+    this.db.deleteUser(id);
     return true;
   }
 }

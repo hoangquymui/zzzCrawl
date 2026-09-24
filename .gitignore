@@ -30,6 +30,8 @@ videos_data*.json
 profiles_data*.json
 output.csv
 output.json
+*.sqlite
+*.sqlite-*
 
 # Scratch / Temp files
 scratch/
