@@ -62,4 +62,16 @@ export const profileManagementApi = {
     if (!res.ok) throw new Error('Không thể xóa danh sách profile');
     return res.json();
   },
+
+  async syncFromVideos(): Promise<{ success: boolean; addedCount: number; totalVideos: number; message: string }> {
+    const res = await fetch(`${API_BASE}/sync-from-videos`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders() },
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || 'Lỗi khi quét người dùng từ dữ liệu');
+    }
+    return res.json();
+  },
 };

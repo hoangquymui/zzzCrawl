@@ -14,6 +14,8 @@ import { ScraperService } from './scraper.service';
 import { VideosGateway } from './videos.gateway';
 import { DatabaseService } from '../database/database.service';
 import { CookieService } from './cookie.service';
+import { checkCaptionViolation } from './utils/profanity-checker';
+import { ProfileManagementService } from './profile-management.service';
 
 @Injectable()
 export class VideosService implements OnModuleInit, OnModuleDestroy {
@@ -24,6 +26,7 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
   private autoRefreshMinutes = 3;
   private concurrencyMode: 'custom' | 'max' = 'custom';
   private concurrencyCount = 5;
+  private readonly maxSafeConcurrency = 5;
 
   constructor(
     private readonly storageService: StorageService,
@@ -31,13 +34,47 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     @Inject(forwardRef(() => VideosGateway))
     private readonly videosGateway: VideosGateway,
     private readonly db: DatabaseService,
-    private readonly cookieService: CookieService
+    private readonly cookieService: CookieService,
+    @Inject(forwardRef(() => ProfileManagementService))
+    private readonly profileManagementService: ProfileManagementService
   ) {}
 
   public onModuleInit(): void {
     this.trackedVideos = this.storageService.loadVideos();
     let hasChanges = false;
     for (const v of this.trackedVideos) {
+      // 1. Chuyển đổi link /watch/?v=... hoặc video.php cũ sang link chuẩn /[author]/videos/[id]/ nếu có thông tin tác giả
+      if (v.link && (v.link.includes('/watch') || v.link.includes('video.php'))) {
+        const mVid = v.link.match(/[?&]v=(\d+)/);
+        if (mVid) {
+          const videoId = mVid[1];
+          let authorHandle = '';
+          if (v.authorUrl) {
+            const mPeople = v.authorUrl.match(/\/people\/[^/]+\/(\d+)/i);
+            if (mPeople) {
+              authorHandle = mPeople[1];
+            } else {
+              const mUser = v.authorUrl.match(/facebook\.com\/([a-zA-Z0-9._-]+)(?:\/|\?|$)/i);
+              if (
+                mUser &&
+                !['people', 'watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups', 'profile.php'].includes(
+                  mUser[1].toLowerCase()
+                )
+              ) {
+                authorHandle = mUser[1];
+              }
+            }
+          }
+          if (!authorHandle && v.authorUid) {
+            authorHandle = v.authorUid;
+          }
+          if (authorHandle) {
+            v.link = `https://www.facebook.com/${authorHandle}/videos/${videoId}/`;
+            hasChanges = true;
+          }
+        }
+      }
+
       const clean = this.scraperService.sanitizeUrl(v.link);
       if (clean && clean !== v.link) {
         v.link = clean;
@@ -56,10 +93,21 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
           hasChanges = true;
         }
       }
+      if (!v.id || !v.id.trim()) {
+        const isTt = this.scraperService.detectPlatform(v.link) === 'tiktok' || v.link.includes('tiktok.com');
+        v.id = `${isTt ? 'tt' : 'fb'}-${v.STT || 1}`;
+        hasChanges = true;
+      }
+      const violation = checkCaptionViolation(v.caption);
+      if (v.isViolation !== violation.isViolation || v.violationReason !== violation.reason) {
+        v.isViolation = violation.isViolation;
+        v.violationReason = violation.reason;
+        hasChanges = true;
+      }
     }
     if (hasChanges) {
       this.storageService.saveVideos(this.trackedVideos);
-      this.logger.log(`Đã chuẩn hóa và làm gọn link cho các video trong database.`);
+      this.logger.log(`Đã chuẩn hóa, gắn ID và làm gọn link cho các video trong database.`);
     }
     this.logger.log(`Đã tải ${this.trackedVideos.length} video từ bộ nhớ lưu trữ.`);
 
@@ -85,12 +133,34 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     return this.trackedVideos;
   }
 
+  public generateNextId(link: string): string {
+    const isTikTok = this.scraperService.detectPlatform(link) === 'tiktok' || link.includes('tiktok.com');
+    const prefix = isTikTok ? 'tt-' : 'fb-';
+    let maxNum = 0;
+    for (const v of this.trackedVideos) {
+      if (v.id && v.id.startsWith(prefix)) {
+        const numPart = parseInt(v.id.slice(prefix.length), 10);
+        if (!isNaN(numPart) && numPart > maxNum) {
+          maxNum = numPart;
+        }
+      }
+    }
+    return `${prefix}${maxNum + 1}`;
+  }
+
   public async addVideo(rawUrl: string): Promise<VideoItem> {
     if (!rawUrl || !rawUrl.trim()) {
       throw new BadRequestException('URL không được để trống');
     }
 
-    const cleanUrl = this.scraperService.sanitizeUrl(rawUrl);
+    let cleanUrl = this.scraperService.sanitizeUrl(rawUrl);
+    if (this.scraperService.isRedirectUrl(cleanUrl)) {
+      try {
+        const resolved = await this.scraperService.resolveFinalUrl(cleanUrl);
+        if (resolved) cleanUrl = this.scraperService.sanitizeUrl(resolved);
+      } catch {}
+    }
+
     const isFacebook = cleanUrl.includes('facebook.com') || cleanUrl.includes('fb.watch');
     if (isFacebook) {
       await this.cookieService.validateCookieForCrawl();
@@ -99,28 +169,29 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     // 1. Kiểm tra nhanh theo URL đã làm sạch
     const existingByUrl = this.trackedVideos.find((v) => v.link === cleanUrl);
     if (existingByUrl) {
-      throw new BadRequestException(`Video này đã có trong danh sách theo dõi (STT ${existingByUrl.STT})!`);
+      throw new BadRequestException(`Video này đã có trong danh sách theo dõi (${existingByUrl.id || 'STT ' + existingByUrl.STT})!`);
     }
 
     const nextSTT =
       this.trackedVideos.length > 0
-        ? Math.max(...this.trackedVideos.map((v) => v.STT)) + 1
+        ? Math.max(...this.trackedVideos.map((v) => v.STT || 0)) + 1
         : 1;
 
-    this.videosGateway.emitCrawlStatus(`Đang cào dữ liệu cho STT ${nextSTT}...`, cleanUrl);
+    const nextId = this.generateNextId(cleanUrl);
+
+    this.videosGateway.emitCrawlStatus(`Đang cào dữ liệu cho ${nextId}...`, cleanUrl);
 
     const data = await this.scraperService.scrapeVideo(cleanUrl, nextSTT);
+    if (data.crawlStatus === 'PARTIAL_SUCCESS' || data.crawlStatus === 'SCRAPE_FAILED') {
+      throw new BadRequestException('Không thể xác minh đủ dữ liệu của nội dung này; không lưu kết quả crawl thiếu.');
+    }
+    data.id = nextId;
+    data.STT = nextSTT;
     data.lastUpdated = new Date().toISOString();
 
     // Đảm bảo data.link luôn là URL đích cuối cùng gọn nhất
     let finalLink = data.link ? this.scraperService.sanitizeUrl(data.link) : cleanUrl;
-    if (
-      finalLink.includes('/share/') ||
-      finalLink.includes('fb.watch') ||
-      finalLink.includes('/t/') ||
-      finalLink.includes('vt.tiktok.com') ||
-      finalLink.includes('vm.tiktok.com')
-    ) {
+    if (this.scraperService.isRedirectUrl(finalLink)) {
       try {
         finalLink = await this.scraperService.resolveFinalUrl(finalLink);
       } catch {}
@@ -135,7 +206,7 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       const existingByResolvedUrl = this.trackedVideos.find((v) => v.link === data.link);
       if (existingByResolvedUrl) {
         throw new BadRequestException(
-          `Video này đã có trong danh sách theo dõi (trùng với STT ${existingByResolvedUrl.STT})!`
+          `Video này đã có trong danh sách theo dõi (trùng với ${existingByResolvedUrl.id || 'STT ' + existingByResolvedUrl.STT})!`
         );
       }
     }
@@ -163,19 +234,53 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
 
     if (existingDuplicate) {
       throw new BadRequestException(
-        `Bài viết/video này đã có trong danh sách theo dõi (trùng với STT ${existingDuplicate.STT})!`
+        `Bài viết/video này đã có trong danh sách theo dõi (trùng với ${existingDuplicate.id || 'STT ' + existingDuplicate.STT})!`
       );
     }
+
+    const violation = checkCaptionViolation(data.caption);
+    data.isViolation = violation.isViolation;
+    data.violationReason = violation.reason;
 
     this.trackedVideos.push(data);
     this.storageService.saveVideos(this.trackedVideos);
 
     this.videosGateway.emitVideoAdded(data);
+
+    // Tự động kiểm tra và thêm profile của người đăng nếu chưa có id trong database
+    try {
+      const authorProfile = await this.profileManagementService.ensureProfileForAuthor({
+        nguoiDang: data.nguoiDang,
+        authorUid: data.authorUid,
+        authorUrl: data.authorUrl,
+        link: data.link || cleanUrl,
+      });
+
+      if (authorProfile) {
+        let needsResave = false;
+        if (!data.authorUid && authorProfile.uid) {
+          data.authorUid = authorProfile.uid;
+          needsResave = true;
+        }
+        if (!data.authorUrl && authorProfile.profileUrl) {
+          data.authorUrl = authorProfile.profileUrl;
+          needsResave = true;
+        }
+        if (needsResave) {
+          this.storageService.saveVideos(this.trackedVideos);
+        }
+      }
+    } catch (profileErr: any) {
+      this.logger.warn(`Lỗi khi tự động thêm profile cho người đăng (${data.nguoiDang}): ${profileErr?.message}`);
+    }
+
     return data;
   }
 
-  public async refreshVideo(stt: number): Promise<VideoItem> {
-    const video = this.trackedVideos.find((v) => v.STT === stt);
+  public async refreshVideo(idOrStt: string | number): Promise<VideoItem> {
+    const video = this.trackedVideos.find(
+      (v) => v.id === String(idOrStt) || String(v.STT) === String(idOrStt)
+    );
     if (!video) {
       throw new NotFoundException('Không tìm thấy video');
     }
@@ -185,15 +290,22 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       await this.cookieService.validateCookieForCrawl();
     }
 
-    this.videosGateway.emitCrawlStatus(`Đang cập nhật video STT ${stt}...`, video.link);
+    this.videosGateway.emitCrawlStatus(`Đang cập nhật video ${video.id || 'STT ' + video.STT}...`, video.link);
 
-    const freshData = await this.scraperService.scrapeVideo(video.link, stt);
+    const freshData = await this.scraperService.scrapeVideo(video.link, video.STT || 1);
+    if (freshData.crawlStatus === 'PARTIAL_SUCCESS' || freshData.crawlStatus === 'SCRAPE_FAILED') {
+      throw new BadRequestException('Không thể xác minh đủ dữ liệu mới; dữ liệu đã lưu được giữ nguyên.');
+    }
     const resolvedLink = this.scraperService.sanitizeUrl(freshData.link || video.link);
+    const freshCaption = freshData.caption || video.caption || '';
+    const violationCheck = checkCaptionViolation(freshCaption);
     const updatedVideo: VideoItem = {
       ...video,
       ...freshData,
+      id: video.id,
+      STT: video.STT,
       link: resolvedLink,
-      caption: freshData.caption || video.caption,
+      caption: freshCaption,
       nguoiDang: freshData.nguoiDang || video.nguoiDang,
       isShared: freshData.isShared !== undefined ? freshData.isShared : video.isShared,
       originalAuthor: freshData.originalAuthor || video.originalAuthor,
@@ -201,10 +313,14 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       originalPostUrl: freshData.originalPostUrl
         ? this.scraperService.sanitizeUrl(freshData.originalPostUrl)
         : video.originalPostUrl ? this.scraperService.sanitizeUrl(video.originalPostUrl) : undefined,
+      isViolation: violationCheck.isViolation,
+      violationReason: violationCheck.reason,
       lastUpdated: new Date().toISOString(),
     };
 
-    const idx = this.trackedVideos.findIndex((v) => v.STT === stt);
+    const idx = this.trackedVideos.findIndex(
+      (v) => (video.id && v.id === video.id) || v.STT === video.STT
+    );
     if (idx !== -1) {
       this.trackedVideos[idx] = updatedVideo;
       this.storageService.saveVideos(this.trackedVideos);
@@ -214,10 +330,14 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     return updatedVideo;
   }
 
-  public deleteVideo(stt: number): boolean {
-    this.trackedVideos = this.trackedVideos.filter((v) => v.STT !== stt);
+  public deleteVideo(idOrStt: string | number): boolean {
+    const target = this.trackedVideos.find(
+      (v) => v.id === String(idOrStt) || String(v.STT) === String(idOrStt)
+    );
+    if (!target) return false;
+    this.trackedVideos = this.trackedVideos.filter((v) => v !== target);
     this.storageService.saveVideos(this.trackedVideos);
-    this.videosGateway.emitVideoDeleted(stt);
+    this.videosGateway.emitVideoDeleted(target.id || target.STT || 0);
     return true;
   }
 
@@ -229,23 +349,29 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       return { total: this.trackedVideos.length, concurrency: 0 };
     }
 
-    const hasFbVideos = this.trackedVideos.some(
-      (v) => v.link.includes('facebook.com') || v.link.includes('fb.watch')
-    );
-    if (hasFbVideos) {
-      try {
+    // Set the lock before the first await so simultaneous requests cannot start two batches.
+    this.isRefreshingAll = true;
+
+    try {
+      const hasFbVideos = this.trackedVideos.some(
+        (v) => this.scraperService.detectPlatform(v.link) === 'facebook'
+      );
+      if (hasFbVideos) {
         await this.cookieService.validateCookieForCrawl();
-      } catch (err: any) {
-        this.logger.error(`[Làm mới đồng loạt] Cookie hết hạn!`);
-        this.videosGateway.emitCrawlStatus('Lỗi: Cookie hết hạn', '');
-        throw new BadRequestException('Cookie hết hạn');
       }
+    } catch (err: any) {
+        this.logger.error(`[Làm mới đồng loạt] Cookie hết hạn hoặc không hợp lệ: ${err?.message || err}`);
+        this.videosGateway.emitCrawlStatus('Lỗi: Cookie hết hạn', '');
+        this.isRefreshingAll = false;
+        if (source === 'Tự động định kỳ') {
+          return { total: this.trackedVideos.length, concurrency: 0 };
+        }
+        throw new BadRequestException('Cookie hết hạn hoặc không hợp lệ');
     }
 
-    this.isRefreshingAll = true;
     const total = this.trackedVideos.length;
 
-    let concurrency = total;
+    let concurrency = Math.min(total, this.maxSafeConcurrency);
     const effectiveConcurrency =
       customConcurrency === 'default'
         ? this.concurrencyMode === 'max'
@@ -258,7 +384,7 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       effectiveConcurrency !== 'max' &&
       Number(effectiveConcurrency) > 0
     ) {
-      concurrency = Math.min(total, parseInt(String(effectiveConcurrency), 10));
+      concurrency = Math.min(total, this.maxSafeConcurrency, parseInt(String(effectiveConcurrency), 10));
     }
 
     this.logger.log(
@@ -271,17 +397,24 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     const runTask = async (item: VideoItem) => {
       try {
         this.videosGateway.emitCrawlStatus(
-          `[${source}] Đang cập nhật STT ${item.STT} (${completed + 1}/${total})...`,
+          `[${source}] Đang cập nhật ${item.id || 'STT ' + item.STT} (${completed + 1}/${total})...`,
           item.link
         );
 
-        const freshData = await this.scraperService.scrapeVideo(item.link, item.STT);
+        const freshData = await this.scraperService.scrapeVideo(item.link, item.STT || 1);
+        if (freshData.crawlStatus === 'PARTIAL_SUCCESS' || freshData.crawlStatus === 'SCRAPE_FAILED') {
+          throw new Error('Không thể xác minh đủ dữ liệu mới; giữ nguyên dữ liệu đã lưu');
+        }
         const resolvedLink = this.scraperService.sanitizeUrl(freshData.link || item.link);
+        const freshCaption = freshData.caption || item.caption || '';
+        const violationCheck = checkCaptionViolation(freshCaption);
         const mergedVideo: VideoItem = {
           ...item,
           ...freshData,
+          id: item.id,
+          STT: item.STT,
           link: resolvedLink,
-          caption: freshData.caption || item.caption,
+          caption: freshCaption,
           nguoiDang: freshData.nguoiDang || item.nguoiDang,
           isShared: freshData.isShared !== undefined ? freshData.isShared : item.isShared,
           originalAuthor: freshData.originalAuthor || item.originalAuthor,
@@ -289,10 +422,14 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
           originalPostUrl: freshData.originalPostUrl
             ? this.scraperService.sanitizeUrl(freshData.originalPostUrl)
             : item.originalPostUrl ? this.scraperService.sanitizeUrl(item.originalPostUrl) : undefined,
+          isViolation: violationCheck.isViolation,
+          violationReason: violationCheck.reason,
           lastUpdated: new Date().toISOString(),
         };
 
-        const idx = this.trackedVideos.findIndex((v) => v.STT === item.STT);
+        const idx = this.trackedVideos.findIndex(
+          (v) => (item.id && v.id === item.id) || v.STT === item.STT
+        );
         if (idx !== -1) {
           this.trackedVideos[idx] = mergedVideo;
           this.storageService.saveVideos(this.trackedVideos);
@@ -300,7 +437,7 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        this.logger.error(`[Lỗi cập nhật STT ${item.STT}]: ${msg}`);
+        this.logger.error(`[Lỗi cập nhật ${item.id || 'STT ' + item.STT}]: ${msg}`);
       } finally {
         completed++;
         this.videosGateway.emitRefreshAllProgress(completed, total);

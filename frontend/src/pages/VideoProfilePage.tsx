@@ -18,6 +18,7 @@ import {
   Users,
   ChevronDown,
   Calendar,
+  Loader2,
 } from 'lucide-react';
 import { useResizableColumns } from '../hooks/useResizableColumns';
 import { ResizeHandle } from '../components/ResizeHandle';
@@ -55,15 +56,17 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
   const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
     {
       stt: 55,
-      author: 160,
+      author: 150,
+      preview: 260,
       loai: 95,
-      preview: 280,
-      interactions: 160,
-      date: 110,
-      link: 170,
-      actions: 120,
+      date: 105,
+      like: 90,
+      comment: 90,
+      share: 90,
+      view: 95,
+      actions: 140,
     },
-    'scanner_table'
+    'scanner_table_v2'
   );
 
   // Cookie manager modal
@@ -88,6 +91,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
+  const [addingTrackerId, setAddingTrackerId] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   // Toast state
@@ -364,9 +368,14 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     }
 
     if (onAddVideo) {
-      const success = await onAddVideo(url);
-      if (success) {
-        setAddedIds((prev) => new Set([...prev, post.id]));
+      setAddingTrackerId(post.id);
+      try {
+        const success = await onAddVideo(url);
+        if (success) {
+          setAddedIds((prev) => new Set([...prev, post.id]));
+        }
+      } finally {
+        setAddingTrackerId(null);
       }
     }
   };
@@ -957,35 +966,43 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider select-none">
-                <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative py-3 px-3.5 text-center border-r border-slate-200 dark:border-slate-800">
+                <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative py-3 px-3 text-center border-r border-slate-200 dark:border-slate-800">
                   STT
                   <ResizeHandle onMouseDown={(e) => handleColResize('stt', e)} />
                 </th>
-                <th style={{ width: colWidths.author, minWidth: colWidths.author }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                <th style={{ width: colWidths.author, minWidth: colWidths.author }} className="relative py-3 px-3 border-r border-slate-200 dark:border-slate-800">
                   Người đăng
                   <ResizeHandle onMouseDown={(e) => handleColResize('author', e)} />
                 </th>
-                <th style={{ width: colWidths.loai, minWidth: colWidths.loai }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                <th style={{ width: colWidths.preview, minWidth: colWidths.preview }} className="relative py-3 px-3 border-r border-slate-200 dark:border-slate-800">
+                  Caption
+                  <ResizeHandle onMouseDown={(e) => handleColResize('preview', e)} />
+                </th>
+                <th style={{ width: colWidths.loai, minWidth: colWidths.loai }} className="relative py-3 px-3 text-center border-r border-slate-200 dark:border-slate-800">
                   Loại
                   <ResizeHandle onMouseDown={(e) => handleColResize('loai', e)} />
                 </th>
-                <th style={{ width: colWidths.preview, minWidth: colWidths.preview }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
-                  Nội dung trích đoạn
-                  <ResizeHandle onMouseDown={(e) => handleColResize('preview', e)} />
-                </th>
-                <th style={{ width: colWidths.interactions, minWidth: colWidths.interactions }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
-                  Tương tác
-                  <ResizeHandle onMouseDown={(e) => handleColResize('interactions', e)} />
-                </th>
-                <th style={{ width: colWidths.date, minWidth: colWidths.date }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
+                <th style={{ width: colWidths.date, minWidth: colWidths.date }} className="relative py-3 px-3 border-r border-slate-200 dark:border-slate-800">
                   Ngày đăng
                   <ResizeHandle onMouseDown={(e) => handleColResize('date', e)} />
                 </th>
-                <th style={{ width: colWidths.link, minWidth: colWidths.link }} className="relative py-3 px-3.5 border-r border-slate-200 dark:border-slate-800">
-                  Link
-                  <ResizeHandle onMouseDown={(e) => handleColResize('link', e)} />
+                <th style={{ width: colWidths.like, minWidth: colWidths.like }} className="relative py-3 px-3 text-right border-r border-slate-200 dark:border-slate-800">
+                  Lượt like
+                  <ResizeHandle onMouseDown={(e) => handleColResize('like', e)} />
                 </th>
-                <th style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="relative py-3 px-3.5 text-center">
+                <th style={{ width: colWidths.comment, minWidth: colWidths.comment }} className="relative py-3 px-3 text-right border-r border-slate-200 dark:border-slate-800">
+                  lượt comment
+                  <ResizeHandle onMouseDown={(e) => handleColResize('comment', e)} />
+                </th>
+                <th style={{ width: colWidths.share, minWidth: colWidths.share }} className="relative py-3 px-3 text-right border-r border-slate-200 dark:border-slate-800">
+                  lượt Share
+                  <ResizeHandle onMouseDown={(e) => handleColResize('share', e)} />
+                </th>
+                <th style={{ width: colWidths.view, minWidth: colWidths.view }} className="relative py-3 px-3 text-right border-r border-slate-200 dark:border-slate-800">
+                  Lượt xem
+                  <ResizeHandle onMouseDown={(e) => handleColResize('view', e)} />
+                </th>
+                <th style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="relative py-3 px-3 text-center">
                   Thao tác
                   <ResizeHandle onMouseDown={(e) => handleColResize('actions', e)} />
                 </th>
@@ -994,7 +1011,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
               {orderedPosts.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                  <td colSpan={10} className="py-12 text-center text-slate-400">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Users className="w-8 h-8 text-slate-300 dark:text-slate-600" />
                       <p className="font-medium text-xs">Chưa có kết quả quét nào phù hợp.</p>
@@ -1005,7 +1022,8 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                   </td>
                 </tr>
               ) : (
-                orderedPosts.map((post) => {
+                orderedPosts.map((post, idx) => {
+                  const autoStt = idx + 1;
                   const linkBaiViet =
                     post.postUrl && post.postUrl !== 'N/A'
                       ? post.postUrl
@@ -1042,13 +1060,13 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                       key={post.id}
                       className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors"
                     >
-                      {/* STT */}
-                      <td style={{ width: colWidths.stt }} className="py-3 px-3.5 text-center font-mono text-[11px] border-r border-slate-100 dark:border-slate-800/50">
-                        <span className="text-slate-700 dark:text-slate-200 font-bold">{post.sttDisplay}</span>
+                      {/* 1. STT: Tự động nhảy số */}
+                      <td style={{ width: colWidths.stt }} className="py-3 px-3 text-center font-mono text-[11px] border-r border-slate-100 dark:border-slate-800/50">
+                        <span className="text-slate-700 dark:text-slate-200 font-bold">{autoStt}</span>
                       </td>
 
-                      {/* Author */}
-                      <td style={{ width: colWidths.author }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
+                      {/* 2. Người đăng */}
+                      <td style={{ width: colWidths.author }} className="py-3 px-3 border-r border-slate-100 dark:border-slate-800/50">
                         <div className="font-bold truncate text-slate-900 dark:text-white" title={post.author}>
                           {post.author}
                         </div>
@@ -1059,8 +1077,18 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                         )}
                       </td>
 
-                      {/* Loại */}
-                      <td style={{ width: colWidths.loai }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
+                      {/* 3. Caption */}
+                      <td style={{ width: colWidths.preview }} className="py-3 px-3 border-r border-slate-100 dark:border-slate-800/50">
+                        <div
+                          className="line-clamp-2 max-w-[280px] text-slate-800 dark:text-slate-200 text-xs font-semibold"
+                          title={post.textPreview}
+                        >
+                          <span className="line-clamp-2">{post.textPreview}</span>
+                        </div>
+                      </td>
+
+                      {/* 4. Loại */}
+                      <td style={{ width: colWidths.loai }} className="py-3 px-3 border-r border-slate-100 dark:border-slate-800/50 text-center whitespace-nowrap">
                         {(() => {
                           const loai = getPostLoai(post);
                           const loaiStyle =
@@ -1077,99 +1105,102 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
                         })()}
                       </td>
 
-                      {/* Caption */}
-                      <td style={{ width: colWidths.preview }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
-                        <div
-                          className="line-clamp-2 max-w-[280px] text-slate-800 dark:text-slate-200 text-xs font-semibold"
-                          title={post.textPreview}
-                        >
-                          <span className="line-clamp-2">{post.textPreview}</span>
-                        </div>
-                      </td>
-
-                      {/* Interactions */}
-                      <td style={{ width: colWidths.interactions }} className="py-3 px-3.5 font-mono text-[11px] border-r border-slate-100 dark:border-slate-800/50">
-                        <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
-                          <span title="Lượt thích">👍 {post.likesCount}</span>
-                          <span title="Bình luận">💬 {post.commentsCount}</span>
-                          <span title="Lượt chia sẻ">↗ {post.sharesCount}</span>
-                          {post.viewsCount !== '-' && (
-                            <span className="font-bold text-blue-600 dark:text-blue-400" title="Lượt xem">
-                              👁 {post.viewsCount}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Date */}
-                      <td style={{ width: colWidths.date }} className="py-3 px-3.5 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
+                      {/* 5. Ngày đăng */}
+                      <td style={{ width: colWidths.date }} className="py-3 px-3 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
                         {post.date}
                       </td>
 
-                      {/* Links */}
-                      <td style={{ width: colWidths.link }} className="py-3 px-3.5 border-r border-slate-100 dark:border-slate-800/50">
-                        <div className="flex items-center gap-1.5">
+                      {/* 6. Lượt like */}
+                      <td style={{ width: colWidths.like }} className="py-3 px-3 font-mono text-[11px] font-bold text-pink-600 dark:text-pink-400 text-right whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
+                        {post.likesCount || '0'}
+                      </td>
+
+                      {/* 7. lượt comment */}
+                      <td style={{ width: colWidths.comment }} className="py-3 px-3 font-mono text-[11px] font-bold text-amber-600 dark:text-amber-400 text-right whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
+                        {post.commentsCount || '0'}
+                      </td>
+
+                      {/* 8. lượt Share */}
+                      <td style={{ width: colWidths.share }} className="py-3 px-3 font-mono text-[11px] font-medium text-slate-700 dark:text-slate-300 text-right whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
+                        {post.sharesCount || '0'}
+                      </td>
+
+                      {/* 9. Lượt xem */}
+                      <td style={{ width: colWidths.view }} className="py-3 px-3 font-mono text-[11px] font-bold text-emerald-600 dark:text-emerald-400 text-right whitespace-nowrap border-r border-slate-100 dark:border-slate-800/50">
+                        {post.viewsCount !== '-' ? post.viewsCount : '0'}
+                      </td>
+
+                      {/* 10. Thao tác */}
+                      <td style={{ width: colWidths.actions }} className="py-3 px-3 text-center whitespace-nowrap">
+                        <div className="flex items-center justify-center gap-1.5">
                           {linkBaiViet ? (
                             <a
                               href={linkBaiViet}
                               target="_blank"
                               rel="noreferrer"
-                              className="hover:underline flex items-center gap-1 font-mono text-[11px] truncate max-w-[130px] text-blue-600 dark:text-blue-400 font-semibold"
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition cursor-pointer"
                               title={`Mở link bài viết: ${linkBaiViet}`}
                             >
-                              <ExternalLink className="w-3 h-3 shrink-0" />
-                              <span>Link bài viết</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
                             </a>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">N/A</span>
-                          )}
+                          ) : null}
 
                           {linkBaiViet && (
                             <button
                               type="button"
                               onClick={() => handleCopy(linkBaiViet, `post_${post.id}`)}
-                              className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer"
                               title="Sao chép link bài viết"
                             >
                               {copiedId === `post_${post.id}` ? (
-                                <Check className="w-3 h-3 text-emerald-500" />
+                                <Check className="w-3.5 h-3.5 text-emerald-500" />
                               ) : (
-                                <Copy className="w-3 h-3" />
+                                <Copy className="w-3.5 h-3.5" />
                               )}
                             </button>
                           )}
-                        </div>
-                      </td>
 
-                      {/* Action */}
-                      <td style={{ width: colWidths.actions }} className="py-3 px-3.5 text-center">
-                        {isAdmin && onAddVideo && targetVideoUrl && targetVideoUrl !== 'N/A' ? (
-                          <button
-                            type="button"
-                            onClick={() => handleAddToTracker(post)}
-                            disabled={isAdded}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition inline-flex items-center gap-1 ${
-                              isAdded
-                                ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800'
-                                : 'bg-blue-50 dark:bg-blue-500/15 hover:bg-blue-100 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
-                            }`}
-                            title="Thêm video này vào Video Tracker chính để theo dõi tự động"
-                          >
-                            {isAdded ? (
-                              <>
-                                <Check className="w-3 h-3" />
-                                <span>Đã theo dõi</span>
-                              </>
-                            ) : (
-                              <>
-                                <Plus className="w-3 h-3" />
-                                <span>Thêm</span>
-                              </>
-                            )}
-                          </button>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
+                          {isAdmin && onAddVideo && targetVideoUrl && targetVideoUrl !== 'N/A' ? (
+                            <button
+                              type="button"
+                              onClick={() => handleAddToTracker(post)}
+                              disabled={isAdded || addingTrackerId === post.id}
+                              className={`px-2 py-1 rounded-lg text-[11px] font-semibold transition inline-flex items-center gap-1 ${
+                                isAdded
+                                  ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-800'
+                                  : addingTrackerId === post.id
+                                  ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30 opacity-75 cursor-wait'
+                                  : 'bg-blue-50 dark:bg-blue-500/15 hover:bg-blue-100 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30 cursor-pointer'
+                              }`}
+                              title={
+                                isAdded
+                                  ? 'Đã thêm vào Video Tracker'
+                                  : addingTrackerId === post.id
+                                  ? 'Đang thêm vào danh sách theo dõi...'
+                                  : 'Thêm video này vào Video Tracker chính để theo dõi tự động'
+                              }
+                            >
+                              {isAdded ? (
+                                <>
+                                  <Check className="w-3 h-3" />
+                                  <span>Đã thêm</span>
+                                </>
+                              ) : addingTrackerId === post.id ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <span>Theo dõi</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Plus className="w-3 h-3" />
+                                  <span>Theo dõi</span>
+                                </>
+                              )}
+                            </button>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

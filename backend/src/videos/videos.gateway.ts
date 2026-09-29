@@ -49,8 +49,16 @@ export class VideosGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server?.emit('video_updated', video);
   }
 
-  public emitVideoDeleted(stt: number): void {
-    this.server?.emit('video_deleted', { STT: stt });
+  public emitVideosUpdated(videos: VideoItem[]): void {
+    this.server?.emit('initial_data', videos);
+  }
+
+  public emitVideoDeleted(idOrStt: string | number): void {
+    const isNum = typeof idOrStt === 'number' || (!isNaN(Number(idOrStt)) && !String(idOrStt).includes('-'));
+    this.server?.emit('video_deleted', {
+      id: String(idOrStt),
+      STT: isNum ? Number(idOrStt) : undefined,
+    });
   }
 
   public emitRefreshAllStarted(total: number, concurrency: number | string): void {
@@ -95,6 +103,19 @@ export class VideosGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   public emitProfileMgmtStatus(status: string): void {
     this.server?.emit('profile_mgmt_status', { status });
+  }
+
+  public emitCookieLoginEvent(event: {
+    slotId: number;
+    status: 'OPENING' | 'WAITING_LOGIN' | 'SUCCESS' | 'ERROR' | 'CANCELLED';
+    message: string;
+    slot?: any;
+    error?: string;
+  }): void {
+    this.server?.emit('cookie_login_status', {
+      ...event,
+      timestamp: new Date().toISOString(),
+    });
   }
 }
 

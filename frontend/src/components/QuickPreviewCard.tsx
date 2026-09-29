@@ -65,7 +65,7 @@ export const QuickPreviewCard: React.FC<QuickPreviewCardProps> = ({
             {video.loai || (isFB ? 'Facebook Video' : 'TikTok Video')}
           </span>
           <span className="text-[10px] text-slate-500 dark:text-slate-400 bg-slate-200/70 dark:bg-slate-700/60 px-1.5 py-0.5 rounded font-mono font-medium">
-            STT #{video.STT}
+            {video.id || `STT #${video.STT}`}
           </span>
         </div>
 

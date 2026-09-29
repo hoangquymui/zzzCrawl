@@ -13,8 +13,9 @@ export function exportVideosToExcel(
   }
 
   // Chuẩn bị dữ liệu bảng với tiêu đề tiếng Việt rõ ràng
-  const data = videos.map((v) => ({
-    'STT': v.STT,
+  const data = videos.map((v, idx) => ({
+    'STT': idx + 1,
+    'Mã ID': v.id || '',
     'Đường Link': v.link || '',
     'Tiêu đề / Caption': v.caption && v.caption.trim() ? v.caption : 'Không có tiêu đề',
     'Nền tảng': v.loai || '',
@@ -31,6 +32,7 @@ export function exportVideosToExcel(
   // Thiết lập độ rộng cột cho file Excel đẹp mắt, không bị che chữ
   worksheet['!cols'] = [
     { wch: 8 },   // STT
+    { wch: 12 },  // Mã ID
     { wch: 38 },  // Đường Link
     { wch: 50 },  // Tiêu đề / Caption
     { wch: 18 },  // Nền tảng

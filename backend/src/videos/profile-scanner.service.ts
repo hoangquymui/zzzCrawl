@@ -12,6 +12,7 @@ import { VideosGateway } from './videos.gateway';
 import { ScraperService } from './scraper.service';
 import { DatabaseService } from '../database/database.service';
 import { CookieService } from './cookie.service';
+import { checkCaptionViolation } from './utils/profanity-checker';
 
 @Injectable()
 export class ProfileScannerService {
@@ -47,13 +48,26 @@ export class ProfileScannerService {
   ) {}
 
   private getEffectiveCookiePath(): string {
+    if (this.cookieService) {
+      return this.cookieService.getEffectiveCookiePath();
+    }
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
+    const dataPath = path.join(baseDir, 'data', 'cookies.json');
+    if (fs.existsSync(dataPath)) return dataPath;
     if (fs.existsSync(this.cookieFilePath)) return this.cookieFilePath;
     if (fs.existsSync(this.fallbackCookiePath)) return this.fallbackCookiePath;
-    if (fs.existsSync(this.testUserCookiePath)) return this.testUserCookiePath;
-    return this.cookieFilePath;
+    return dataPath;
   }
 
   public loadCookies(): any[] {
+    if (this.cookieService) {
+      return this.cookieService.loadCookies();
+    }
     const filePath = this.getEffectiveCookiePath();
     if (!fs.existsSync(filePath)) return [];
 
@@ -363,36 +377,7 @@ export class ProfileScannerService {
         }
       }
 
-      // Giai đoạn 1: Đọc trước số lượt xem từ tab Reels của các profile
-      this.addLog('');
-      this.addLog('Đang đọc số lượt xem từ tab Reels của các profile...');
-      const profileReelsMap: Record<
-        string,
-        Array<{ videoId: string; reelUrl: string; viewsCount: string }>
-      > = {};
-
-      for (let i = 0; i < urls.length; i++) {
-        if (this.currentCancelFlag) break;
-        const profUrl = urls[i];
-        const reelsPage: Page = await context.newPage();
-        try {
-          const { viewsMap, reels } = await this.fetchProfileReelsViews(reelsPage, profUrl);
-          profileReelsMap[profUrl] = reels;
-          const count = Object.keys(viewsMap).length;
-          if (count > 0) {
-            Object.assign(globalViewsMap, viewsMap);
-            this.addLog(
-              `  [Profile ${i + 1}/${urls.length}] Đã tìm thấy ${count} video Reels có lượt xem.`
-            );
-          }
-        } catch {
-          // Bỏ qua lỗi reels tab
-        } finally {
-          await reelsPage.close();
-        }
-      }
-
-      // Giai đoạn 2: Quét tuần tự từng profile
+      // Quét tuần tự từng profile
       for (let pIdx = 0; pIdx < urls.length; pIdx++) {
         if (this.currentCancelFlag) {
           this.addLog('\n[HỆ THỐNG] Người dùng đã yêu cầu dừng quét.');
@@ -401,6 +386,7 @@ export class ProfileScannerService {
         }
 
         const profileUrl = urls[pIdx];
+        const targetProfileId = this.extractProfileId(profileUrl);
         const timelineUrl = this.getTimelineUrl(profileUrl);
         this.addLog('');
         this.addLog('----------------------------------------');
@@ -440,18 +426,27 @@ export class ProfileScannerService {
 
         page.on('response', async (response) => {
           const u = response.url();
-          if (u.includes('/api/graphql/') || u.includes('graphql')) {
+          if (
+            u.includes('/api/graphql/') ||
+            u.includes('graphql') ||
+            u.includes('bulk-route-definitions') ||
+            u.includes('profile.php')
+          ) {
             try {
               const text = await response.text();
               const list = this.parseGraphQLStories(text);
-              for (const s of list) {
-                capturedGraphQLStories.push(s);
-              }
+               for (const s of list) {
+                 // GraphQL responses can include recommendations and feed preloads.
+                 // With an ID-based profile URL, only accept stories authored by it.
+                 if (!targetProfileId || s.authorId === targetProfileId) {
+                   capturedGraphQLStories.push(s);
+                 }
+               }
             } catch {}
           }
         });
 
-        const reelsTabList = profileReelsMap[profileUrl] || [];
+        const reelsTabList: Array<{ reelUrl: string; views: string }> = [];
 
         try {
           res = await page.goto(timelineUrl, {
@@ -548,7 +543,7 @@ export class ProfileScannerService {
 
           const discoveredItemsMap = new Map<
             string,
-            { loai: string; hasImage: boolean; hasVideo: boolean }
+            { loai: string; hasImage: boolean; hasVideo: boolean; isShared: boolean }
           >();
 
           const addDiscoveredItem = (it: {
@@ -556,17 +551,21 @@ export class ProfileScannerService {
             loai: string;
             hasImage?: boolean;
             hasVideo?: boolean;
+            isShared?: boolean;
           }) => {
+            if (!it || !it.url || !this.isPostPermalink(it.url)) return;
             if (!discoveredItemsMap.has(it.url)) {
               discoveredItemsMap.set(it.url, {
                 loai: it.loai,
                 hasImage: Boolean(it.hasImage),
                 hasVideo: Boolean(it.hasVideo),
+                isShared: Boolean(it.isShared),
               });
             } else {
               const existing = discoveredItemsMap.get(it.url)!;
               if (it.hasImage) existing.hasImage = true;
               if (it.hasVideo) existing.hasVideo = true;
+              if (it.isShared) existing.isShared = true;
             }
           };
 
@@ -592,16 +591,24 @@ export class ProfileScannerService {
             // Bổ sung permalink từ stream GraphQL Comet
             for (const s of capturedGraphQLStories) {
               if (s.permalink_url) {
-                const sUrl = this.scraperService.sanitizeUrl(s.permalink_url);
+                let sUrl = this.scraperService.sanitizeUrl(s.permalink_url);
+                let isPhoto = false;
                 if (sUrl.includes('/photo/') || sUrl.includes('/photos/') || sUrl.includes('photo.php')) {
-                  continue;
+                  const mF = sUrl.match(/fbid=(\d+)/);
+                  if (mF) {
+                    sUrl = `https://www.facebook.com/permalink.php?story_fbid=${mF[1]}`;
+                    isPhoto = true;
+                  } else {
+                    continue;
+                  }
                 }
                 const isVid = Boolean(s.attachedReelUrl || s.attachedVideoId);
                 addDiscoveredItem({
                   url: sUrl,
-                  loai: isVid ? 'Video' : 'Bài viết',
+                  loai: s.isShared ? 'Chia sẻ' : isVid ? 'Video' : isPhoto ? 'Hình ảnh' : 'Bài viết',
                   hasVideo: isVid,
-                  hasImage: false,
+                  hasImage: isPhoto,
+                  isShared: s.isShared,
                 });
               }
               if (s.attachedReelUrl) {
@@ -640,16 +647,24 @@ export class ProfileScannerService {
           // Bổ sung các permalink từ capturedGraphQLStories
           for (const s of capturedGraphQLStories) {
             if (s.permalink_url) {
-              const sUrl = this.scraperService.sanitizeUrl(s.permalink_url);
+              let sUrl = this.scraperService.sanitizeUrl(s.permalink_url);
+              let isPhoto = false;
               if (sUrl.includes('/photo/') || sUrl.includes('/photos/') || sUrl.includes('photo.php')) {
-                continue;
+                const mF = sUrl.match(/fbid=(\d+)/);
+                if (mF) {
+                  sUrl = `https://www.facebook.com/permalink.php?story_fbid=${mF[1]}`;
+                  isPhoto = true;
+                } else {
+                  continue;
+                }
               }
               const isVid = Boolean(s.attachedReelUrl || s.attachedVideoId);
               addDiscoveredItem({
                 url: sUrl,
-                loai: isVid ? 'Video' : 'Bài viết',
+                  loai: s.isShared ? 'Chia sẻ' : isVid ? 'Video' : isPhoto ? 'Hình ảnh' : 'Bài viết',
                 hasVideo: isVid,
-                hasImage: false,
+                hasImage: isPhoto,
+                  isShared: s.isShared,
               });
             }
             if (s.attachedReelUrl) {
@@ -687,11 +702,14 @@ export class ProfileScannerService {
             loai: string;
             hasImage: boolean;
             hasVideo: boolean;
+            isShared: boolean;
           }> = [];
           const seenIdSet = new Set<string>();
 
           for (const [rawUrl, meta] of discoveredItemsMap.entries()) {
             const cleanU = this.scraperService.sanitizeUrl(rawUrl);
+            if (!this.isPostPermalink(cleanU)) continue;
+
             const pId = this.extractPostIdFromUrl(cleanU);
             if (pId) {
               if (!seenIdSet.has(pId)) {
@@ -701,6 +719,7 @@ export class ProfileScannerService {
                   loai: meta.loai,
                   hasImage: meta.hasImage,
                   hasVideo: meta.hasVideo,
+                  isShared: meta.isShared,
                 });
               }
             } else {
@@ -710,6 +729,7 @@ export class ProfileScannerService {
                   loai: meta.loai,
                   hasImage: meta.hasImage,
                   hasVideo: meta.hasVideo,
+                  isShared: meta.isShared,
                 });
               }
             }
@@ -735,20 +755,45 @@ export class ProfileScannerService {
           for (const item of uniqueItemList) {
             if (this.currentCancelFlag) break;
 
-            // Bỏ qua nếu là link photo
-            if (item.url.includes('/photo/') || item.url.includes('/photos/') || item.url.includes('photo.php')) {
-              continue;
+            let crawlUrl = item.url;
+            if (crawlUrl.includes('/photo/') || crawlUrl.includes('/photos/') || crawlUrl.includes('photo.php')) {
+              const mF = crawlUrl.match(/fbid=(\d+)/);
+              if (mF) {
+                crawlUrl = `https://www.facebook.com/permalink.php?story_fbid=${mF[1]}`;
+              } else {
+                continue;
+              }
             }
 
             crawledCount++;
 
             try {
               // Sử dụng chính logic crawl của trang dữ liệu (ScraperService.scrapeVideo)
-              const scraped = await this.scraperService.scrapeVideo(item.url);
+              let scraped = await this.scraperService.scrapeVideo(crawlUrl);
               if (!scraped) continue;
 
-              const finalUrl = scraped.link || item.url;
-              if (finalUrl.includes('/photo/') || finalUrl.includes('/photos/') || finalUrl.includes('photo.php')) {
+              // HTTP often omits the attachment tree for Facebook posts. Verify
+              // every non-video post on its own rendered permalink before deciding
+              // between text-only, image, and shared post types.
+              if (
+                !scraped.hasImage &&
+                scraped.loai !== 'Facebook Reel' &&
+                scraped.loai !== 'Facebook Video'
+              ) {
+                const rendered = await this.scraperService.scrapeWithBrowser(crawlUrl);
+                scraped = {
+                  ...scraped,
+                  caption: (!scraped.caption || scraped.caption === 'Không có tiêu đề') ? (rendered.caption || scraped.caption) : scraped.caption,
+                  hasImage: rendered.hasImage === true,
+                  isShared: rendered.isShared === true,
+                  LuotLike: rendered.LuotLike || scraped.LuotLike,
+                  LuotComment: rendered.LuotComment || scraped.LuotComment,
+                  SoLuongNguoiShare: rendered.SoLuongNguoiShare || scraped.SoLuongNguoiShare,
+                };
+              }
+
+              const finalUrl = scraped.link || crawlUrl;
+              if (!this.isPostPermalink(finalUrl)) {
                 continue;
               }
               if (seenCanonicalUrls.has(finalUrl)) continue;
@@ -777,21 +822,7 @@ export class ProfileScannerService {
 
               consecutiveOldPosts = 0;
 
-              // PHÂN LOẠI CHÍNH XÁC THEO YÊU CẦU:
-              // "nếu tương tác có mắt xem thì là link video, còn không có thì là hình ảnh.
-              // bài viết là bài không có hình ảnh hay video"
-
-              // 1. Kiểm tra bài có mắt xem (lượt xem / views) hay không
-              const hasViews =
-                (scraped.LuotXem && scraped.LuotXem > 0) ||
-                Boolean(
-                  scraped.postId &&
-                    globalViewsMap[scraped.postId] &&
-                    globalViewsMap[scraped.postId] !== '-' &&
-                    globalViewsMap[scraped.postId] !== '0'
-                );
-
-              // 2. Kiểm tra link có phải link video chuyên biệt (/reel/, /watch, /videos/, tiktok)
+              // Thứ tự ưu tiên chính xác: Bài viết chia sẻ > Video/Reel > Hình ảnh > Bài viết văn bản
               const isDirectVideoUrl =
                 finalUrl.includes('/reel/') ||
                 finalUrl.includes('/reels/') ||
@@ -799,22 +830,24 @@ export class ProfileScannerService {
                 finalUrl.includes('/videos/') ||
                 scraped.loai === 'Facebook Reel' ||
                 scraped.loai === 'Facebook Video' ||
-                scraped.loai === 'TikTok Video';
+                scraped.loai === 'TikTok Video' ||
+                scraped.LuotXem > 0;
 
-              // ĐIỀU KIỆN 1: VIDEO (tương tác có mắt xem HOẶC link chuyên biệt về video)
-              const isVideo = hasViews || isDirectVideoUrl;
+              const isVideo = isDirectVideoUrl || Boolean(item.hasVideo);
+              const isShared = Boolean(scraped.isShared);
 
-              // ĐIỀU KIỆN 2 & 3: HÌNH ẢNH vs BÀI VIẾT (khi không có mắt xem)
-              let finalLoai: 'Video' | 'Hình ảnh' | 'Bài viết';
-              if (isVideo) {
+              let finalLoai: 'Chia sẻ' | 'Video' | 'Hình ảnh' | 'Bài viết';
+              if (isShared) {
+                finalLoai = 'Chia sẻ';
+              } else if (isVideo) {
                 finalLoai = 'Video';
               } else {
-                const hasImage =
-                  Boolean(item.hasImage) ||
-                  Boolean(scraped.hasImage) ||
-                  scraped.loai === 'Facebook Photo' ||
-                  finalUrl.includes('/photos/') ||
-                  finalUrl.includes('/photo');
+                const isPhotoUrl =
+                  (finalUrl.includes('/photo/') || finalUrl.includes('/photo?') || finalUrl.includes('photo.php')) &&
+                  !finalUrl.includes('permalink.php') &&
+                  !finalUrl.includes('/posts/');
+
+                const hasImage = isPhotoUrl || scraped.hasImage === true;
 
                 if (hasImage) {
                   finalLoai = 'Hình ảnh';
@@ -823,10 +856,13 @@ export class ProfileScannerService {
                 }
               }
 
+              const caption = scraped.caption || '';
+              const violation = checkCaptionViolation(caption);
+
               const postItem: ScannedPostItem = this.sanitizeScannedPost({
                 id: `post_${finalUrl}`,
                 videoId: scraped.postId || '',
-                isShared: false,
+                isShared,
                 hasVideo: isVideo,
                 loai: finalLoai,
                 postUrl: finalUrl,
@@ -837,12 +873,14 @@ export class ProfileScannerService {
                 postType: scraped.loai || finalLoai,
                 date: dateInfo.formatted,
                 timestamp: dateInfo.timestamp,
-                textPreview: scraped.caption || '(Không có nội dung văn bản)',
+                textPreview: caption || '(Không có nội dung văn bản)',
                 viewsCount: scraped.LuotXem > 0 ? String(scraped.LuotXem) : '-',
                 likesCount: String(scraped.LuotLike || 0),
                 commentsCount: String(scraped.LuotComment || 0),
                 sharesCount: String(scraped.SoLuongNguoiShare || 0),
                 profileSource: profileUrl,
+                isViolation: violation.isViolation,
+                violationReason: violation.reason,
               });
 
               this.state.foundPosts.push(postItem);
@@ -894,7 +932,7 @@ export class ProfileScannerService {
       for (const p of this.state.foundPosts) {
         if ((!p.viewsCount || p.viewsCount === '-') && p.videoId && globalViewsMap[p.videoId]) {
           p.viewsCount = globalViewsMap[p.videoId];
-          if (p.viewsCount && p.viewsCount !== '-' && p.viewsCount !== '0') {
+          if (!p.isShared && p.viewsCount && p.viewsCount !== '-' && p.viewsCount !== '0') {
             p.loai = 'Video';
             p.hasVideo = true;
           }
@@ -987,10 +1025,10 @@ export class ProfileScannerService {
    */
   public async extractTimelineLinksAndTypes(
     page: Page
-  ): Promise<Array<{ url: string; loai: string; hasImage: boolean; hasVideo: boolean }>> {
+  ): Promise<Array<{ url: string; loai: string; hasImage: boolean; hasVideo: boolean; isShared: boolean }>> {
     try {
       return await page.evaluate(() => {
-        const results: Array<{ url: string; loai: string; hasImage: boolean; hasVideo: boolean }> = [];
+        const results: Array<{ url: string; loai: string; hasImage: boolean; hasVideo: boolean; isShared: boolean }> = [];
         const seenUrls = new Set<string>();
 
         function cleanFbUrl(href: string): { url: string; loai: string } | null {
@@ -1007,13 +1045,16 @@ export class ProfileScannerService {
             h.includes('/sharer.php') ||
             h.includes('/recover/') ||
             h.includes('/messages/') ||
-            h.includes('/friends/') ||
+            h.includes('/friends') ||
             h.includes('/notifications') ||
             h.includes('/about/') ||
             h.includes('/privacy') ||
             h.includes('/hashtag/') ||
+            h.includes('/p/') ||
+            h.includes('/people/') ||
             h.includes('comment_id=') ||
-            h.includes('help.facebook.com')
+            h.includes('help.facebook.com') ||
+            (h.includes('profile.php') && !h.includes('story_fbid=') && !h.includes('fbid='))
           ) {
             return null;
           }
@@ -1028,6 +1069,17 @@ export class ProfileScannerService {
 
           // 2. Videos / Watch
           if (h.includes('/videos/') || h.includes('/watch')) {
+            const mUserVid =
+              h.match(/facebook\.com\/([a-zA-Z0-9._-]+)\/videos\/(?:[^/?#]+\/)*(\d+)/i) ||
+              h.match(/^\/([a-zA-Z0-9._-]+)\/videos\/(?:[^/?#]+\/)*(\d+)/i);
+            if (
+              mUserVid &&
+              !['watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups', 'people', 'profile.php'].includes(
+                mUserVid[1].toLowerCase()
+              )
+            ) {
+              return { url: `https://www.facebook.com/${mUserVid[1]}/videos/${mUserVid[2]}/`, loai: 'Video' };
+            }
             const mV = h.match(/(?:videos\/|\?v=)(\d+)/);
             if (mV) {
               return { url: `https://www.facebook.com/watch/?v=${mV[1]}`, loai: 'Video' };
@@ -1065,30 +1117,70 @@ export class ProfileScannerService {
             } catch {}
           }
 
-          // 5. Nếu link ảnh chứa set=pcb.<postId> -> Chuyển thành link bài viết permalink.php, TUYỆT ĐỐI không lấy link photo
+          // 5. Nếu link ảnh chứa fbid hoặc set=pcb -> Chuyển thành link bài viết permalink.php
           if (h.includes('set=pcb.')) {
             const mPcb = h.match(/set=pcb\.(\d+)/);
             if (mPcb) {
               return {
                 url: `https://www.facebook.com/permalink.php?story_fbid=${mPcb[1]}`,
-                loai: 'Bài viết',
+                loai: 'Hình ảnh',
+              };
+            }
+          }
+          if (h.includes('/photo') || h.includes('photo.php')) {
+            // Bỏ qua nếu là link ảnh đại diện/avatar cá nhân (set=a. hoặc set=pb.)
+            if (h.includes('set=a.') || h.includes('set=pb.')) {
+              return null;
+            }
+            const mFbid = h.match(/fbid=(\d+)/);
+            if (mFbid) {
+              return {
+                url: `https://www.facebook.com/permalink.php?story_fbid=${mFbid[1]}`,
+                loai: 'Hình ảnh',
               };
             }
           }
 
-          // BỎ TOÀN BỘ link ảnh /photo/, /photos/, photo.php
+          // BỎ TOÀN BỘ link ảnh /photo/, /photos/, photo.php không có fbid
           return null;
         }
 
         // Quét từng bài viết (card) trên dòng thời gian
-        let articles = Array.from(document.querySelectorAll('div[role="article"]'));
+        let articles = Array.from(document.querySelectorAll('div[role="article"]')).filter((a) => {
+          const aria = (a.getAttribute('aria-label') || '').toLowerCase();
+          return !aria.includes('comment') && !aria.includes('bình luận');
+        });
         if (articles.length === 0) {
           articles = Array.from(
             document.querySelectorAll('div[data-pagelet*="FeedUnit_"], div[data-pagelet*="ProfileTimeline"]')
           );
         }
+        if (articles.length === 0) {
+          const actionBtns = Array.from(
+            document.querySelectorAll(
+              'div[aria-label*="Actions for this post" i], div[aria-label*="Hành động với bài viết" i], div[aria-label*="Thao tác với bài viết" i], div[aria-label*="Tùy chọn bài viết" i]'
+            )
+          );
+          articles = actionBtns
+            .map((btn) => {
+              let p: HTMLElement | null = btn as HTMLElement;
+              for (let k = 0; k < 12 && p && p.parentElement && p.parentElement !== document.body; k++) {
+                if (
+                  p.getAttribute('data-pagelet') ||
+                  (p.className && (p.className.includes('x1yztbdb') || p.className.includes('x1a2a7pz')))
+                ) {
+                  break;
+                }
+                p = p.parentElement;
+              }
+              return p;
+            })
+            .filter(Boolean) as HTMLElement[];
+        }
 
         for (const art of articles) {
+          const articleText = (art as HTMLElement).innerText || '';
+          const isShared = /(?:đã chia sẻ (?:một )?(?:bài viết|video|thước phim|ảnh|liên kết)|shared\s+(?:a\s+)?(?:post|video|reel|link|photo)|shared post from)/i.test(articleText.slice(0, 500));
           // Thẻ video thực sự trong bài viết (thẻ video HTML5, data-video-id, hoặc link reel/watch/videos)
           const hasVideoTag = Boolean(
             art.querySelector('video') ||
@@ -1096,21 +1188,25 @@ export class ProfileScannerService {
             art.querySelector('a[href*="/reel/"], a[href*="/reels/"], a[href*="/watch"], a[href*="/videos/"]')
           );
 
-          // Thẻ hình ảnh nội dung thật trong bài viết (loại trừ emoji và avatar nhỏ <= 50px)
-          const contentImgs = Array.from(art.querySelectorAll('img')).filter((img) => {
-            const src = img.getAttribute('src') || '';
-            const w = img.width || img.naturalWidth || 0;
-            const h = img.height || img.naturalHeight || 0;
-            if (src.includes('/emoji.php') || src.includes('/rsrc.php')) return false;
-            return (src.includes('scontent') || src.includes('fbcdn')) && (w >= 80 || h >= 80);
+          // Thẻ hình ảnh nội dung thật trong bài viết (loại trừ avatar tác giả và emoji)
+          // Bài viết hình ảnh trên Facebook luôn đính kèm link mở ảnh (/photo/, photo.php, set=pcb.)
+          const photoAnchors = Array.from(
+            art.querySelectorAll('a[href*="/photo/"], a[href*="/photo?"], a[href*="photo.php"], a[href*="set=pcb."]')
+          );
+          const hasImageTag = photoAnchors.some((a) => {
+            const href = a.getAttribute('href') || '';
+            if (href.includes('set=a.') || href.includes('set=pb.')) return false;
+            const img = a.querySelector('img');
+            if (img) {
+              const rect = img.getBoundingClientRect();
+              const w = rect.width || img.naturalWidth || img.width || 0;
+              const h = rect.height || img.naturalHeight || img.height || 0;
+              if (w > 0 && w <= 60 && h > 0 && h <= 60) return false;
+              if (w >= 80 || h >= 80) return true;
+            }
+            if (href.includes('set=pcb.')) return true;
+            return false;
           });
-
-          const contentImgDivs = Array.from(art.querySelectorAll('div[role="img"]')).filter((d) => {
-            const aria = (d.getAttribute('aria-label') || '').toLowerCase();
-            return !aria.includes('thích') && !aria.includes('like') && !aria.includes('bình luận') && !aria.includes('chia sẻ');
-          });
-
-          const hasImageTag = contentImgs.length > 0 || contentImgDivs.length > 0;
           const anchors = Array.from(art.querySelectorAll('a[href]')) as HTMLAnchorElement[];
 
           // Ưu tiên 1: Link thời gian đăng bài (timestamp permalink của bài viết)
@@ -1120,7 +1216,7 @@ export class ProfileScannerService {
             const hasTimeMarker =
               /\d|vừa|just|hôm qua|yesterday/i.test(aria) ||
               (t.length <= 30 && /\d|vừa|just|hôm qua|yesterday/i.test(t));
-            return hasTimeMarker && !a.href.includes('profile.php?id=');
+            return hasTimeMarker && !(a.href.includes('profile.php?id=') && !a.href.includes('story_fbid=') && !a.href.includes('fbid='));
           });
 
           let chosenItem: { url: string; loai: string } | null = null;
@@ -1143,9 +1239,10 @@ export class ProfileScannerService {
             seenUrls.add(chosenItem.url);
             results.push({
               url: chosenItem.url,
-              loai: hasVideoTag ? 'Video' : hasImageTag ? 'Hình ảnh' : 'Bài viết',
+              loai: isShared ? 'Chia sẻ' : (chosenItem.loai ? chosenItem.loai : (hasVideoTag ? 'Video' : hasImageTag ? 'Hình ảnh' : 'Bài viết')),
               hasImage: hasImageTag,
               hasVideo: hasVideoTag,
+              isShared,
             });
           }
         }
@@ -1196,6 +1293,17 @@ export class ProfileScannerService {
       // Bỏ qua lỗi context
     }
     return false;
+  }
+
+  private extractProfileId(profileUrl: string): string | null {
+    try {
+      const parsed = new URL(profileUrl);
+      const id = parsed.searchParams.get('id');
+      return id && /^\d+$/.test(id) ? id : null;
+    } catch {
+      const match = profileUrl.match(/[?&]id=(\d+)/);
+      return match ? match[1] : null;
+    }
   }
 
   private getTimelineUrl(profileUrl: string): string {
@@ -1828,28 +1936,37 @@ export class ProfileScannerService {
           if (isComment(msg)) continue;
           if (postElements.some((p) => p.contains(msg))) continue;
 
-          let card: Element | null = msg;
-          let steps = 0;
-          let bestCandidate: Element | null = null;
-          while (
-            card &&
-            card.parentElement &&
-            card.parentElement !== document.body &&
-            steps < 25
-          ) {
-            const hasActions = Boolean(card.querySelector(actionSelectors));
-            const hasHeader = Boolean(card.querySelector('h2, h3, h4, [role="heading"], strong'));
-            if (hasActions && hasHeader) {
-              bestCandidate = card;
-              break;
+          let finalCard: Element | null =
+            msg.closest('[aria-posinset]') ||
+            msg.closest('div[data-pagelet*="FeedUnit"]') ||
+            msg.closest('div[role="article"]') ||
+            null;
+
+          if (!finalCard) {
+            let card: Element | null = msg;
+            let steps = 0;
+            while (card && card.parentElement && steps < 10) {
+              const parent = card.parentElement;
+              if (
+                parent === document.body ||
+                parent.getAttribute('role') === 'feed' ||
+                parent.getAttribute('role') === 'main' ||
+                parent.querySelectorAll('div[data-ad-preview="message"]').length > 1 ||
+                parent.querySelectorAll('[aria-posinset]').length > 1
+              ) {
+                break;
+              }
+              const hasActions = Boolean(card.querySelector(actionSelectors));
+              const hasHeader = Boolean(card.querySelector('h2, h3, h4, [role="heading"], strong'));
+              if (hasActions && hasHeader) {
+                finalCard = card;
+                break;
+              }
+              card = parent;
+              steps++;
             }
-            if (hasActions && !bestCandidate) {
-              bestCandidate = card;
-            }
-            card = card.parentElement;
-            steps++;
           }
-          const finalCard = bestCandidate || card;
+
           if (finalCard && !seenCards.has(finalCard)) {
             seenCards.add(finalCard);
             postElements.push(finalCard);
@@ -1869,28 +1986,37 @@ export class ProfileScannerService {
           if (isComment(btn.closest('div[role="article"]'))) continue;
           const alreadyCovered = postElements.some((c) => c.contains(btn));
           if (!alreadyCovered) {
-            let card: Element | null = btn;
-            let steps = 0;
-            let bestCandidate: Element | null = null;
-            while (
-              card &&
-              card.parentElement &&
-              card.parentElement !== document.body &&
-              steps < 25
-            ) {
-              const hasHeader = Boolean(card.querySelector('h2, h3, h4, [role="heading"], strong'));
-              const hasContent = Boolean(card.querySelector('div[data-ad-preview="message"], video, img, [role="img"]'));
-              if (hasHeader && hasContent) {
-                bestCandidate = card;
-                break;
+            let finalCard: Element | null =
+              btn.closest('[aria-posinset]') ||
+              btn.closest('div[data-pagelet*="FeedUnit"]') ||
+              btn.closest('div[role="article"]') ||
+              null;
+
+            if (!finalCard) {
+              let card: Element | null = btn;
+              let steps = 0;
+              while (card && card.parentElement && steps < 10) {
+                const parent = card.parentElement;
+                if (
+                  parent === document.body ||
+                  parent.getAttribute('role') === 'feed' ||
+                  parent.getAttribute('role') === 'main' ||
+                  parent.querySelectorAll('div[data-ad-preview="message"]').length > 1 ||
+                  parent.querySelectorAll('[aria-posinset]').length > 1
+                ) {
+                  break;
+                }
+                const hasHeader = Boolean(card.querySelector('h2, h3, h4, [role="heading"], strong'));
+                const hasContent = Boolean(card.querySelector('div[data-ad-preview="message"], video, img, [role="img"]'));
+                if (hasHeader && hasContent) {
+                  finalCard = card;
+                  break;
+                }
+                card = parent;
+                steps++;
               }
-              if (hasHeader || hasContent) {
-                bestCandidate = card;
-              }
-              card = card.parentElement;
-              steps++;
             }
-            const finalCard = bestCandidate || card;
+
             if (finalCard && !seenCards.has(finalCard)) {
               seenCards.add(finalCard);
               postElements.push(finalCard);
@@ -1987,20 +2113,29 @@ export class ProfileScannerService {
 
         const results: any[] = [];
 
-        for (const el of postElements) {
+        // Lọc bỏ các container bao trùm container khác (ngăn chặn feed container nuốt card con)
+        const validPostCards = postElements.filter((p) => {
+          return !postElements.some((other) => other !== p && p.contains(other));
+        });
+
+        for (const el of validPostCards) {
           const fullText = (el as HTMLElement).innerText || '';
           const textNorm = norm(fullText);
           const allMsgs = Array.from(el.querySelectorAll('div[data-ad-preview="message"]'));
-          const isShared =
-            /(?:đã chia sẻ một (?:bài viết|video|thước phim|ảnh|liên kết)|đã chia sẻ bài viết của|đã chia sẻ video của|shared a (?:post|video|reel|link|photo)|shared post from)/i.test(
-              fullText.slice(0, 500)
-            ) ||
-            (allMsgs.length > 1 &&
-              Boolean(
-                el.querySelector(
-                  '[aria-label*="Được chia sẻ" i], [aria-label*="Shared with" i], div[style*="border"] h2, div[style*="border"] h3, div[style*="border"] h4'
-                )
-              ));
+
+          // Phát hiện bài viết chia sẻ:
+          // Chỉ kiểm tra tiêu đề header của bài viết hoặc thẻ article con lồng bên trong
+          const headerEl = el.querySelector('h2, h3, h4, [role="heading"]');
+          const headerText = headerEl ? (headerEl.textContent || '') : '';
+          const hasSharedHeader = /(?:đã chia sẻ một (?:bài viết|video|thước phim|ảnh|liên kết)|đã chia sẻ bài viết của|đã chia sẻ video của|shared a (?:post|video|reel|link|photo)|shared post from)/i.test(headerText);
+
+          const nestedArticles = Array.from(el.querySelectorAll('div[role="article"]')).filter((a) => {
+            if (a === el) return false;
+            const aria = (a.getAttribute('aria-label') || '').toLowerCase();
+            if (aria.includes('comment') || aria.includes('bình luận') || aria.includes('reply')) return false;
+            return true;
+          });
+          const isShared = hasSharedHeader || nestedArticles.length > 0;
 
           let textPreview = '';
           if (allMsgs.length > 0) {
@@ -2071,14 +2206,22 @@ export class ProfileScannerService {
           // Phát hiện hình ảnh trong bài (ảnh nội dung thật, loại trừ icon/avatar nhỏ)
           const bigImgs = Array.from(el.querySelectorAll('img')).filter((img) => {
             const src = img.getAttribute('src') || '';
+            const alt = (img.alt || '').toLowerCase();
+            const parentA = img.closest('a');
+            const parentAria = parentA ? (parentA.getAttribute('aria-label') || '').toLowerCase() : '';
+            const parentHref = parentA ? (parentA.href || '').toLowerCase() : '';
+
+            // Bỏ qua avatar tác giả
+            if (alt.includes('ảnh đại diện') || alt.includes('profile picture') || parentAria.includes('ảnh đại diện') || parentAria.includes('profile picture')) return false;
+            if (img.closest('h2, h3, h4, [role="heading"]')) return false;
+            if (parentHref.includes('profile.php') || parentHref.includes('/user/')) return false;
+
             const w = img.width || img.naturalWidth || 0;
-            return (src.includes('scontent') || src.includes('fbcdn')) && w >= 150;
+            const h = img.height || img.naturalHeight || 0;
+            const isPhotoLink = parentHref.includes('/photo') || parentHref.includes('photo.php') || parentHref.includes('set=pcb.');
+            return (src.includes('scontent') || src.includes('fbcdn')) && ((w >= 200 && h >= 150) || (isPhotoLink && w >= 120));
           });
-          const imgDivs = Array.from(el.querySelectorAll('div[role="img"]')).filter((d) => {
-            const r = (d as HTMLElement).getBoundingClientRect();
-            return r.width >= 150 && r.height >= 100;
-          });
-          const hasImage = bigImgs.length > 0 || imgDivs.length > 0;
+          const hasImage = !hasVideo && (bigImgs.length > 0);
 
           // Link bài viết
           let postUrl = '';
@@ -2408,8 +2551,23 @@ export class ProfileScannerService {
   private extractStoriesFromObject(obj: any, results: any[] = []): any[] {
     if (!obj || typeof obj !== 'object') return results;
 
-    if (obj.permalink_url) {
-      const pUrl = String(obj.permalink_url).replace(/\\\//g, '/');
+    const rawUrlCandidate = obj.permalink_url || obj.wwwURL || obj.url;
+    let urlCandidate = '';
+    if (rawUrlCandidate && typeof rawUrlCandidate === 'string') {
+      urlCandidate = rawUrlCandidate;
+    } else if (obj.story_fbid && obj.actors?.[0]?.id) {
+      urlCandidate = `https://www.facebook.com/permalink.php?story_fbid=${obj.story_fbid}&id=${obj.actors[0].id}`;
+    }
+
+    if (urlCandidate) {
+      const pUrl = String(urlCandidate).replace(/\\\//g, '/');
+      if (!this.isPostPermalink(pUrl)) {
+        // Bỏ qua nếu không phải permalink bài viết (tránh link hashtag, profile, ...)
+        for (const k of Object.keys(obj)) {
+          this.extractStoriesFromObject(obj[k], results);
+        }
+        return results;
+      }
       const msg =
         obj.message?.text ||
         obj.comet_sections?.content?.story?.message?.text ||
@@ -2534,7 +2692,11 @@ export class ProfileScannerService {
         msg,
         author,
         authorId,
-        isShared: Boolean(attached),
+        isShared:
+          obj.is_shared === true ||
+          obj.is_reshare === true ||
+          obj.is_share_story === true ||
+          String(obj.story_type || '').toUpperCase() === 'RESHARE',
         attachedReelUrl,
         attachedVideoId,
         attachedAuthor,
@@ -2549,6 +2711,141 @@ export class ProfileScannerService {
       this.extractStoriesFromObject(obj[k], results);
     }
     return results;
+  }
+
+  public isPostPermalink(url: string): boolean {
+    if (!url || url === 'N/A') return false;
+    const u = url.trim().toLowerCase();
+
+    // Loại bỏ các đường dẫn profile, hashtag, group non-post, login, friends, people...
+    if (
+      u.includes('/hashtag/') ||
+      u.includes('/login') ||
+      u.includes('/sharer.php') ||
+      u.includes('/recover/') ||
+      u.includes('/messages/') ||
+      u.includes('/friends') ||
+      u.includes('/notifications') ||
+      u.includes('/about/') ||
+      u.includes('/privacy') ||
+      u.includes('/p/') || // Profile link dạng facebook.com/p/Name-ID
+      u.includes('/people/')
+    ) {
+      return false;
+    }
+
+    // Nếu là profile.php nhưng KHÔNG chứa story_fbid hay fbid -> Đây là link trang cá nhân, không phải bài viết
+    if (u.includes('profile.php') && !u.includes('story_fbid=') && !u.includes('fbid=')) {
+      return false;
+    }
+
+    // Bắt buộc phải khớp một trong các dạng permalink bài viết/video/reel/photo chuẩn
+    return (
+      u.includes('permalink.php') ||
+      u.includes('story.php') ||
+      u.includes('/posts/') ||
+      u.includes('/reel/') ||
+      u.includes('/reels/') ||
+      u.includes('/watch') ||
+      u.includes('/videos/') ||
+      u.includes('fbid=')
+    );
+  }
+
+  private scanTextForPermalinks(
+    text: string,
+    targetList: Array<{
+      permalink_url: string;
+      msg: string;
+      author: string;
+      authorId: string;
+      isShared: boolean;
+      attachedReelUrl: string;
+      attachedVideoId: string;
+      attachedAuthor: string;
+      creation_time: number;
+      reaction_count: number;
+      comment_count: number;
+      share_count: number;
+    }>
+  ): void {
+    if (!text) return;
+
+    // 1. wwwURL: "wwwURL":"https:\/\/www.facebook.com\/..."
+    const wwwMatches = text.match(/"wwwURL"\s*:\s*"([^"]+)"/g) || [];
+    for (const m of wwwMatches) {
+      const u = m
+        .replace(/"wwwURL"\s*:\s*"/, '')
+        .replace(/"$/, '')
+        .replace(/\\\//g, '/');
+      if (this.isPostPermalink(u)) {
+        targetList.push({
+          permalink_url: u,
+          msg: '',
+          author: '',
+          authorId: '',
+          isShared: false,
+          attachedReelUrl: '',
+          attachedVideoId: '',
+          attachedAuthor: '',
+          creation_time: 0,
+          reaction_count: 0,
+          comment_count: 0,
+          share_count: 0,
+        });
+      }
+    }
+
+    // 2. permalink_url
+    const permMatches = text.match(/"permalink_url"\s*:\s*"([^"]+)"/g) || [];
+    for (const m of permMatches) {
+      const u = m
+        .replace(/"permalink_url"\s*:\s*"/, '')
+        .replace(/"$/, '')
+        .replace(/\\\//g, '/');
+      if (this.isPostPermalink(u)) {
+        targetList.push({
+          permalink_url: u,
+          msg: '',
+          author: '',
+          authorId: '',
+          isShared: false,
+          attachedReelUrl: '',
+          attachedVideoId: '',
+          attachedAuthor: '',
+          creation_time: 0,
+          reaction_count: 0,
+          comment_count: 0,
+          share_count: 0,
+        });
+      }
+    }
+
+    // 3. Route definitions: "/permalink.php?story_fbid=..."
+    const routeMatches = text.match(/"\/(permalink\.php\?[^"]+)"/g) || [];
+    for (const m of routeMatches) {
+      const path = m
+        .replace(/^"\//, '')
+        .replace(/"$/, '')
+        .replace(/\\\//g, '/');
+      const u = 'https://www.facebook.com/' + path;
+      if (this.isPostPermalink(u)) {
+        targetList.push({
+          permalink_url: u,
+          msg: '',
+          author: '',
+          authorId: '',
+          isShared: false,
+          attachedReelUrl: '',
+          attachedVideoId: '',
+          attachedAuthor: '',
+          creation_time: 0,
+          reaction_count: 0,
+          comment_count: 0,
+          share_count: 0,
+        });
+      }
+    }
   }
 
   private parseGraphQLStories(text: string): any[] {
@@ -2587,8 +2884,25 @@ export class ProfileScannerService {
 
   public extractPostIdFromUrl(url: string): string | null {
     if (!url || url === 'N/A') return null;
-    const m = url.match(/(?:posts|videos|reel|fbid=|story_fbid=|\/)\/?(pfbid[a-zA-Z0-9]+|\d{9,})/);
-    return m ? m[1] : null;
+    if (!this.isPostPermalink(url)) return null;
+
+    // 1. Dạng story_fbid hoặc fbid
+    const mFbid = url.match(/(?:story_fbid|fbid)=(pfbid[a-zA-Z0-9]+|\d+)/);
+    if (mFbid) return mFbid[1];
+
+    // 2. Dạng /posts/123 hoặc /posts/pfbid123
+    const mPost = url.match(/\/posts\/(pfbid[a-zA-Z0-9]+|\d{8,})/);
+    if (mPost) return mPost[1];
+
+    // 3. Dạng /reel/123 hoặc /reels/123
+    const mReel = url.match(/\/reels?\/([a-zA-Z0-9_-]+)/);
+    if (mReel && mReel[1] !== 'watch' && mReel[1] !== 'videos') return mReel[1];
+
+    // 4. Dạng /watch/?v=123 hoặc /videos/123
+    const mVid = url.match(/(?:videos\/|\?v=)(\d+)/);
+    if (mVid) return mVid[1];
+
+    return null;
   }
 
   public parseFacebookDate(raw: any): { dateObj: Date | null; timestamp: number; formatted: string } {

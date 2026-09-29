@@ -29,8 +29,8 @@ import { socket } from '../services/socket';
 
 export interface PostManagementPageProps {
   videos: VideoItem[];
-  onRefreshOne?: (stt: number) => Promise<void> | Promise<boolean> | void;
-  onDelete?: (stt: number) => Promise<void> | Promise<boolean> | void;
+  onRefreshOne?: (idOrStt: string | number) => Promise<void> | Promise<boolean> | void;
+  onDelete?: (idOrStt: string | number) => Promise<void> | Promise<boolean> | void;
 }
 
 export type PostCategory = 'all' | 'post' | 'photo' | 'video';
@@ -180,7 +180,7 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Trạng thái mở rộng caption bài viết
-  const [expandedCaptions, setExpandedCaptions] = useState<Record<number, boolean>>({});
+  const [expandedCaptions, setExpandedCaptions] = useState<Record<string | number, boolean>>({});
 
   // Tải danh sách profiles từ backend
   const fetchProfiles = async () => {
@@ -231,8 +231,8 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
   };
 
   // Toggle xem thêm caption
-  const toggleCaption = (stt: number) => {
-    setExpandedCaptions((prev) => ({ ...prev, [stt]: !prev[stt] }));
+  const toggleCaption = (idOrStt: string | number) => {
+    setExpandedCaptions((prev) => ({ ...prev, [idOrStt]: !prev[idOrStt] }));
   };
 
   // 1. Phân chia bài viết cho từng profile và "Bài viết khác"
@@ -391,7 +391,7 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
             </div>
             <div>
               <h1 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                Quản lý bài viết
+                Bài viết
                 <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30">
                   Posts Manager
                 </span>
@@ -777,20 +777,21 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
               </div>
             ) : (
               displayedPosts.map((post) => {
-                const isExpanded = Boolean(expandedCaptions[post.STT]);
+                const rowId = post.id || (post.STT !== undefined ? post.STT : String(post.link));
+                const isExpanded = Boolean(expandedCaptions[rowId]);
                 const snippetLength = 120;
                 const isLongCaption = (post.caption || '').length > snippetLength;
 
                 return (
                   <div
-                    key={post.STT}
+                    key={rowId}
                     className="p-4 rounded-xl border border-slate-200/80 dark:border-slate-800/80 bg-slate-50/40 dark:bg-slate-950/30 hover:border-slate-300 dark:hover:border-slate-700 transition space-y-3"
                   >
-                    {/* Hàng 1: STT, Loại & Ngày đăng, Người đăng */}
+                    {/* Hàng 1: ID/STT, Loại & Ngày đăng, Người đăng */}
                     <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
                       <div className="flex items-center gap-2">
                         <span className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-                          #{post.STT}
+                          {post.id || `#${post.STT}`}
                         </span>
 
                         <span
@@ -830,7 +831,7 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
                       {isLongCaption && (
                         <button
                           type="button"
-                          onClick={() => toggleCaption(post.STT)}
+                          onClick={() => toggleCaption(rowId)}
                           className="mt-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
                         >
                           {isExpanded ? 'Thu gọn' : 'Xem thêm'}
@@ -854,11 +855,11 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => handleCopy(post.link, `link_${post.STT}`)}
+                          onClick={() => handleCopy(post.link, `link_${rowId}`)}
                           className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition shrink-0 cursor-pointer"
                           title="Sao chép link bài viết"
                         >
-                          {copiedId === `link_${post.STT}` ? (
+                          {copiedId === `link_${rowId}` ? (
                             <Check className="w-3.5 h-3.5 text-emerald-500" />
                           ) : (
                             <Copy className="w-3.5 h-3.5" />
@@ -872,7 +873,7 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
                           {onRefreshOne && (
                             <button
                               type="button"
-                              onClick={() => onRefreshOne(post.STT)}
+                              onClick={() => onRefreshOne(rowId)}
                               className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer"
                               title="Cập nhật lại tương tác bài viết này"
                             >
@@ -882,7 +883,7 @@ export const PostManagementPage: React.FC<PostManagementPageProps> = ({
                           {onDelete && (
                             <button
                               type="button"
-                              onClick={() => onDelete(post.STT)}
+                              onClick={() => onDelete(rowId)}
                               className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
                               title="Xóa bài viết này khỏi danh sách theo dõi"
                             >

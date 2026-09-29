@@ -1,20 +1,21 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StatsCards } from '../components/StatsCards';
 import { DailyCharts } from '../components/DailyCharts';
 import { AddVideoForm } from '../components/AddVideoForm';
 import { VideoTable } from '../components/VideoTable';
+import { ViolationTable } from '../components/ViolationTable';
 import { VideoItem, BatchProgress } from '../types/video';
 import { useAuth } from '../context/AuthContext';
 
 interface DashboardPageProps {
   videos: VideoItem[];
   batchProgress: BatchProgress;
-  updatedRowStt: number | null;
+  updatedRowStt: string | number | null;
   crawlStatus: string | null;
   onAddVideo: (url: string) => Promise<boolean>;
-  onRefreshOne: (stt: number) => Promise<void>;
+  onRefreshOne: (idOrStt: string | number) => Promise<void>;
   onRefreshAll: () => Promise<void>;
-  onDelete: (stt: number) => Promise<void>;
+  onDelete: (idOrStt: string | number) => Promise<void>;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -29,6 +30,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 }) => {
   const { isAdmin } = useAuth();
 
+  // Tách riêng các bài viết vi phạm tiêu chuẩn và các bài viết theo dõi bình thường
+  const violationVideos = useMemo(() => videos.filter((v) => v.isViolation), [videos]);
+  const trackingVideos = useMemo(() => videos.filter((v) => !v.isViolation), [videos]);
+
   return (
     <div className="space-y-6">
       {/* Metric Summary Cards */}
@@ -42,9 +47,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <AddVideoForm onAddVideo={onAddVideo} crawlStatus={crawlStatus} />
       )}
 
+      {/* Bảng vi phạm tiêu chuẩn (Hiển thị ngay trên trang chủ) */}
+      <ViolationTable
+        videos={violationVideos}
+        onRefreshOne={onRefreshOne}
+        onDelete={onDelete}
+        canManage={isAdmin}
+      />
+
       {/* Data Table */}
       <VideoTable
-        videos={videos}
+        videos={trackingVideos}
         batchProgress={batchProgress}
         updatedRowStt={updatedRowStt}
         onRefreshOne={onRefreshOne}

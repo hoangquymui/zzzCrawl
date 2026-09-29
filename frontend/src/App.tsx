@@ -19,6 +19,7 @@ import { VideoProfilePage } from './pages/VideoProfilePage';
 import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { CookiePage } from './pages/CookiePage';
 import { PostManagementPage } from './pages/PostManagementPage';
+import { VocabularyPage } from './pages/VocabularyPage';
 
 export const App: React.FC = () => {
   const {
@@ -168,6 +169,17 @@ export const App: React.FC = () => {
                 </ProtectedRoute>
               }
             />
+
+            {/* 7b. Vocabulary (Quản lý từ vựng vi phạm - Yêu cầu quyền Admin) */}
+            <Route
+              path="/vocabulary"
+              element={
+                <ProtectedRoute requiredRole="admin">
+                  <VocabularyPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/quan-ly-tu-vung" element={<Navigate to="/vocabulary" replace />} />
 
             {/* 8. Reports (Báo cáo & Tải file - Yêu cầu đăng nhập) */}
             <Route

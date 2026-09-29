@@ -31,29 +31,27 @@ export class VideosController {
     return { success: true, data };
   }
 
-  @Delete(':stt')
+  @Delete(':id')
   @UseGuards(RolesGuard)
   @Roles('admin')
-  public delete(@Param('stt') sttParam: string): { success: boolean } {
-    const stt = parseInt(sttParam, 10);
-    if (isNaN(stt)) {
-      throw new BadRequestException('STT không hợp lệ');
+  public delete(@Param('id') idParam: string): { success: boolean } {
+    if (!idParam) {
+      throw new BadRequestException('ID không hợp lệ');
     }
-    this.videosService.deleteVideo(stt);
+    this.videosService.deleteVideo(idParam);
     return { success: true };
   }
 
-  @Post(':stt/refresh')
+  @Post(':id/refresh')
   @UseGuards(RolesGuard)
   @Roles('admin')
   public async refreshOne(
-    @Param('stt') sttParam: string
+    @Param('id') idParam: string
   ): Promise<{ success: boolean; data: VideoItem }> {
-    const stt = parseInt(sttParam, 10);
-    if (isNaN(stt)) {
-      throw new BadRequestException('STT không hợp lệ');
+    if (!idParam) {
+      throw new BadRequestException('ID không hợp lệ');
     }
-    const data = await this.videosService.refreshVideo(stt);
+    const data = await this.videosService.refreshVideo(idParam);
     return { success: true, data };
   }
 
@@ -70,12 +68,14 @@ export class VideosController {
       return { success: true, message: 'Danh sách theo dõi đang trống' };
     }
 
-    const concurrency = refreshDto?.concurrency || 'all';
-    this.videosService.refreshAllVideosBatch('Yêu cầu từ người dùng', concurrency);
+    const concurrency = refreshDto?.concurrency || 'default';
+    void this.videosService.refreshAllVideosBatch('Yêu cầu từ người dùng', concurrency).catch(() => {
+      // The service has already logged and emitted the actionable error to the UI.
+    });
 
     return {
       success: true,
-      message: `Bắt đầu làm mới ${videos.length} video với toàn bộ luồng song song (tối đa)`,
+      message: `Bắt đầu làm mới ${videos.length} video với số luồng an toàn đã cấu hình`,
     };
   }
 }

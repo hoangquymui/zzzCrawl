@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build --outDir ../backend/public --emptyOutDir && vite build",
     "build:backend": "tsc -b && vite build --outDir ../backend/public --emptyOutDir",
     "preview": "vite preview"
   },

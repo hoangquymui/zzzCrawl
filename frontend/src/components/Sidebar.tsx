@@ -15,6 +15,7 @@ import {
   User,
   UserCheck,
   ShieldCheck,
+  ShieldAlert,
   Lock,
   LogOut,
   Layers,
@@ -37,20 +38,21 @@ interface NavItem {
 
 const HOME_ITEMS: NavItem[] = [
   { key: 'dashboard', label: 'Trang chủ', path: '/', icon: Compass },
-  { key: 'post_management', label: 'Quản lý bài viết', path: '/post-management', icon: Layers },
+  { key: 'post_management', label: 'Bài viết', path: '/post-management', icon: Layers },
   { key: 'analytics', label: 'Biểu đồ', path: '/analytics', icon: BarChart3 },
 ];
 
 const DOCUMENT_ITEMS: NavItem[] = [
   { key: 'link', label: 'Dữ liệu', path: '/link', icon: Link2 },
-  { key: 'video_profile', label: 'Thu thập dữ liệu cá nhân', path: '/video-profile', icon: Video },
+  { key: 'video_profile', label: 'Thu thập dữ liệu', path: '/video-profile', icon: Video },
   { key: 'profile_management', label: 'Trang cá nhân', path: '/profile-management', icon: UserCheck },
   { key: 'reports', label: 'Báo cáo', path: '/reports', icon: FileText },
-  { key: 'cookie', label: 'Cookie', path: '/cookie', icon: ShieldCheck },
 ];
 
 const ADMIN_ITEMS: NavItem[] = [
-  { key: 'users', label: 'Quản lý tài khoản', path: '/users', icon: Users, adminOnly: true },
+  { key: 'users', label: 'Tài khoản', path: '/users', icon: Users, adminOnly: true },
+  { key: 'vocabulary', label: 'Từ ngữ', path: '/vocabulary', icon: ShieldAlert, adminOnly: true },
+  { key: 'cookie', label: 'Cookie', path: '/cookie', icon: ShieldCheck, adminOnly: true },
 ];
 
 const BOTTOM_ITEMS: NavItem[] = [
@@ -79,6 +81,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     if (path === '/post-management') {
       return location.pathname === '/post-management' || location.pathname === '/quan-ly-bai-viet';
+    }
+    if (path === '/vocabulary') {
+      return location.pathname === '/vocabulary' || location.pathname === '/quan-ly-tu-vung';
     }
     return location.pathname === path || location.pathname.startsWith(`${path}/`);
   };
@@ -185,9 +190,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {renderNavList(
               isAdmin
                 ? DOCUMENT_ITEMS
-                : DOCUMENT_ITEMS.filter(
-                    (item) => item.key !== 'cookie' && item.key !== 'video_profile'
-                  )
+                : DOCUMENT_ITEMS.filter((item) => item.key !== 'video_profile')
             )}
           </div>
         )}

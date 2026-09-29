@@ -53,6 +53,14 @@ export class ProfileManagementController {
     return this.profileManagementService.startCrawl(dto.profileUrls);
   }
 
+  @Post('sync-from-videos')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  public async syncProfilesFromVideos() {
+    return this.profileManagementService.syncProfilesFromVideos();
+  }
+
   @Post('stop')
   @UseGuards(RolesGuard)
   @Roles('admin')

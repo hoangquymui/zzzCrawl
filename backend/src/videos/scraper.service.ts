@@ -1,97 +1,71 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { chromium, Browser } from 'playwright';
 import { VideoItem } from './interfaces/video.interface';
 import { CookieService } from './cookie.service';
+import { parseNumber, parseNumberDetailed, ParsedNumberDetail } from './utils/number-parser';
+import {
+  decodeHtmlEntities,
+  normalizeCaption,
+  isBoilerplateCaption,
+  isValidAuthor,
+  cleanAuthorName,
+} from './utils/text-normalizer';
+import {
+  sanitizeUrl,
+  detectPlatform,
+  detectContentType,
+  isRedirectUrl,
+  isFacebookUrl,
+  isTikTokUrl,
+  PlatformType,
+  ContentType,
+} from './utils/url-cleaner';
+import { validateScrapeResult, ScrapeValidation } from './utils/scrape-validator';
 
 @Injectable()
-export class ScraperService {
+export class ScraperService implements OnModuleDestroy {
   private readonly logger = new Logger(ScraperService.name);
   private browserInstance: Browser | null = null;
 
   constructor(private readonly cookieService: CookieService) {}
 
+  public async onModuleDestroy(): Promise<void> {
+    if (this.browserInstance) {
+      try {
+        await this.browserInstance.close();
+        this.browserInstance = null;
+        this.logger.log('[Playwright] Đã đóng browser instance an toàn khi shutdown.');
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`[Playwright] Lỗi đóng browser: ${msg}`);
+      }
+    }
+  }
+
   /**
    * Giải mã các ký tự mã hóa HTML (&#x...;, &amp;, &quot;,...) và escape JSON
+   * Giữ nguyên cấu trúc xuống dòng
    */
   public unescapeHtml(text?: string | null): string {
-    if (!text) return '';
-    let res = String(text)
-      .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-      .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-      .replace(/&amp;/g, '&')
-      .replace(/&quot;/g, '"')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&apos;/g, "'")
-      .replace(/&#039;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\\r/g, '')
-      .replace(/\\n/g, ' ')
-      .replace(/\\"/g, '"')
-      .replace(/\\\//g, '/');
+    return decodeHtmlEntities(text);
+  }
 
-    try {
-      res = res.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
-        String.fromCharCode(parseInt(hex, 16))
-      );
-    } catch {
-      // Bỏ qua lỗi
-    }
-
-    // Xử lý surrogate pairs (emoji): \uD83D\uDE00 → 😀
-    try {
-      res = res.replace(
-        /[\uD800-\uDBFF][\uDC00-\uDFFF]/g,
-        (pair) => pair // Giữ nguyên surrogate pair hợp lệ
-      );
-    } catch {
-      // Bỏ qua lỗi
-    }
-
-    return res.replace(/\s+/g, ' ').trim();
+  /**
+   * Chuẩn hóa nội dung caption, loại bỏ khoảng trắng thừa nhưng bảo tồn dòng và đoạn văn
+   */
+  public normalizeCaption(text?: string | null): string {
+    return normalizeCaption(text);
   }
 
   /**
    * Chuyển đổi các định dạng số có đơn vị (2,8 triệu, 1.3K, 45K, 2.8M, 2,823,400) sang số nguyên
    */
   public parseNumber(text?: string | number | null): number {
-    if (text === null || text === undefined) return 0;
-    if (typeof text === 'number') return Math.floor(text);
+    return parseNumber(text);
+  }
 
-    const str = String(text).trim().replace(/\xa0/g, ' ').replace(/&nbsp;/g, ' ');
-    const match = str.match(/([\d.,]+)\s*(triệu|tr|nghìn|ngàn|tỷ|[kKmMbB])?(?=\s|[^\w]|$)/i);
-    if (!match) return 0;
-
-    let numStr = match[1].trim();
-    const unit = (match[2] || '').toLowerCase();
-
-    if (numStr.includes(',') && numStr.includes('.')) {
-      if (numStr.lastIndexOf(',') > numStr.lastIndexOf('.')) {
-        numStr = numStr.replace(/\./g, '').replace(',', '.');
-      } else {
-        numStr = numStr.replace(/,/g, '');
-      }
-    } else if (numStr.includes(',')) {
-      const parts = numStr.split(',');
-      if (parts.length === 2 && (parts[1].length === 1 || parts[1].length === 2) && unit) {
-        numStr = parts[0] + '.' + parts[1];
-      } else {
-        numStr = numStr.replace(/,/g, '');
-      }
-    } else if (numStr.includes('.')) {
-      const parts = numStr.split('.');
-      if (parts.length === 2 && parts[1].length === 3 && !unit) {
-        numStr = numStr.replace(/\./g, '');
-      }
-    }
-
-    const val = parseFloat(numStr);
-    if (isNaN(val)) return 0;
-
-    if (['k', 'nghìn', 'ngàn'].includes(unit)) return Math.floor(val * 1000);
-    if (['m', 'triệu', 'tr'].includes(unit)) return Math.floor(val * 1000000);
-    if (['b', 'tỷ'].includes(unit)) return Math.floor(val * 1000000000);
-    return Math.floor(val);
+  public parseNumberDetailed(text?: string | number | null): ParsedNumberDetail {
+    return parseNumberDetailed(text);
   }
 
   /**
@@ -108,32 +82,294 @@ export class ScraperService {
   }
 
   /**
+   * Phân tích và chuẩn hóa ngày đăng từ nhiều định dạng:
+   * Unix timestamp, ISO 8601, ngày tuyệt đối tiếng Việt, ngày tương đối tiếng Việt/Anh
+   * Trả về định dạng chuẩn: YYYY-MM-DD HH:mm:ss
+   */
+  public parseAnyDate(raw?: any): string {
+    if (!raw) return '';
+    const str = String(raw).trim();
+    if (!str) return '';
+
+    // 1. Unix timestamp (9-13 chữ số)
+    if (/^\d{9,13}$/.test(str)) {
+      return this.formatTimestamp(str);
+    }
+
+    // 2. ISO 8601: 2026-09-05T02:57:26.000Z hoặc kèm timezone
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(str)) {
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+    }
+
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fmt = (d: Date) =>
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+
+    // 3. Ngày tương đối: vừa xong, vừa, mới đây, gần đây, just now
+    if (/^(vừa xong|vừa|mới đây|gần đây|just now)$/i.test(str)) {
+      return fmt(now);
+    }
+
+    const mMin = str.match(/(\d+)\s*(?:phút|mins?|m\b)/i);
+    if (mMin) {
+      const d = new Date(now.getTime() - parseInt(mMin[1], 10) * 60 * 1000);
+      return fmt(d);
+    }
+
+    const mHour = str.match(/(\d+)\s*(?:giờ|hours?|h\b)/i);
+    if (mHour) {
+      const d = new Date(now.getTime() - parseInt(mHour[1], 10) * 3600 * 1000);
+      return fmt(d);
+    }
+
+    const mYesterday = str.match(/(?:hôm qua|yesterday)(?:\s*(?:lúc|at)?\s*(\d{1,2}):(\d{2}))?/i);
+    if (mYesterday) {
+      const d = new Date(now.getTime() - 86400 * 1000);
+      if (mYesterday[1] && mYesterday[2]) {
+        d.setHours(parseInt(mYesterday[1], 10), parseInt(mYesterday[2], 10), 0, 0);
+      }
+      return fmt(d);
+    }
+
+    const mDay = str.match(/(\d+)\s*(?:ngày|days?|d\b)/i);
+    if (mDay) {
+      const d = new Date(now.getTime() - parseInt(mDay[1], 10) * 86400 * 1000);
+      return fmt(d);
+    }
+
+    // 4. Ngày tuyệt đối tiếng Việt: "5 tháng 9, 2026 lúc 09:57" hoặc "5 tháng 9 lúc 09:57" hoặc "5 Tháng 9"
+    const mVnDate = str.match(
+      /(\d{1,2})\s+tháng\s+(\d{1,2})(?:[,\s]+(\d{4}))?(?:\s*(?:lúc|at)?\s*(\d{1,2}):(\d{2}))?/i
+    );
+    if (mVnDate) {
+      const day = parseInt(mVnDate[1], 10);
+      const month = parseInt(mVnDate[2], 10) - 1;
+      let year = mVnDate[3] ? parseInt(mVnDate[3], 10) : now.getFullYear();
+      if (!mVnDate[3] && month > now.getMonth()) {
+        year -= 1;
+      }
+      const hasTime = Boolean(mVnDate[4]);
+      const hour = hasTime ? parseInt(mVnDate[4], 10) : 0;
+      const min = hasTime ? parseInt(mVnDate[5], 10) : 0;
+      const d = new Date(year, month, day, hour, min, 0);
+      return fmt(d);
+    }
+
+    // 4b. Ngày tuyệt đối tiếng Anh: "Friday 25 September 2026 at 15:43" hoặc "September 25, 2026 at 3:43 PM"
+    const monthMap: Record<string, number> = {
+      january: 0, jan: 0,
+      february: 1, feb: 1,
+      march: 2, mar: 2,
+      april: 3, apr: 3,
+      may: 4,
+      june: 5, jun: 5,
+      july: 6, jul: 6,
+      august: 7, aug: 7,
+      september: 8, sep: 8, sept: 8,
+      october: 9, oct: 9,
+      november: 10, nov: 10,
+      december: 11, dec: 11,
+    };
+
+    const mEngDateA = str.match(
+      /(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+)?(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)(?:[,\s]+(\d{4}))?(?:\s*(?:at|lúc)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(am|pm))?)?/i
+    );
+    if (mEngDateA) {
+      const day = parseInt(mEngDateA[1], 10);
+      const mName = mEngDateA[2].toLowerCase();
+      const month = monthMap[mName] !== undefined ? monthMap[mName] : 0;
+      let year = mEngDateA[3] ? parseInt(mEngDateA[3], 10) : now.getFullYear();
+      if (!mEngDateA[3] && month > now.getMonth()) {
+        year -= 1;
+      }
+      let hour = mEngDateA[4] ? parseInt(mEngDateA[4], 10) : 0;
+      const min = mEngDateA[5] ? parseInt(mEngDateA[5], 10) : 0;
+      const sec = mEngDateA[6] ? parseInt(mEngDateA[6], 10) : 0;
+      const ampm = mEngDateA[7] ? mEngDateA[7].toLowerCase() : '';
+      if (ampm === 'pm' && hour < 12) hour += 12;
+      if (ampm === 'am' && hour === 12) hour = 0;
+      const d = new Date(year, month, day, hour, min, sec);
+      return fmt(d);
+    }
+
+    const mEngDateB = str.match(
+      /(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+)?(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{1,2})(?:[,\s]+(\d{4}))?(?:\s*(?:at|lúc)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(am|pm))?)?/i
+    );
+    if (mEngDateB) {
+      const mName = mEngDateB[1].toLowerCase();
+      const month = monthMap[mName] !== undefined ? monthMap[mName] : 0;
+      const day = parseInt(mEngDateB[2], 10);
+      let year = mEngDateB[3] ? parseInt(mEngDateB[3], 10) : now.getFullYear();
+      if (!mEngDateB[3] && month > now.getMonth()) {
+        year -= 1;
+      }
+      let hour = mEngDateB[4] ? parseInt(mEngDateB[4], 10) : 0;
+      const min = mEngDateB[5] ? parseInt(mEngDateB[5], 10) : 0;
+      const sec = mEngDateB[6] ? parseInt(mEngDateB[6], 10) : 0;
+      const ampm = mEngDateB[7] ? mEngDateB[7].toLowerCase() : '';
+      if (ampm === 'pm' && hour < 12) hour += 12;
+      if (ampm === 'am' && hour === 12) hour = 0;
+      const d = new Date(year, month, day, hour, min, sec);
+      return fmt(d);
+    }
+
+    // 5. Chuẩn YYYY-MM-DD hoặc DD/MM/YYYY
+    const mStd = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (mStd) {
+      const d = new Date(
+        parseInt(mStd[1], 10),
+        parseInt(mStd[2], 10) - 1,
+        parseInt(mStd[3], 10),
+        mStd[4] ? parseInt(mStd[4], 10) : 0,
+        mStd[5] ? parseInt(mStd[5], 10) : 0,
+        mStd[6] ? parseInt(mStd[6], 10) : 0
+      );
+      return fmt(d);
+    }
+
+    const mDmy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (mDmy) {
+      const d = new Date(
+        parseInt(mDmy[3], 10),
+        parseInt(mDmy[2], 10) - 1,
+        parseInt(mDmy[1], 10),
+        mDmy[4] ? parseInt(mDmy[4], 10) : 0,
+        mDmy[5] ? parseInt(mDmy[5], 10) : 0,
+        mDmy[6] ? parseInt(mDmy[6], 10) : 0
+      );
+      return fmt(d);
+    }
+
+    return '';
+  }
+
+  /**
+   * Trích xuất ngày đăng từ HTML Facebook với cơ chế đa tầng:
+   * 1. Quét toàn bộ các lần xuất hiện của targetVideoId để lấy publish_time, creation_time, created_time
+   * 2. Quét mẫu tiếp giáp gần videoId trong JSON
+   * 3. Quét thẻ Meta / LD+JSON
+   * 4. Quét creation_story / CometFeedStoryLongerTimestampStrategy
+   */
+  public extractFacebookDate(html: string, targetVideoId?: string): string {
+    if (!html) return '';
+
+    // 1. Quét theo targetVideoId (duyệt qua toàn bộ vị trí xuất hiện trong HTML)
+    if (targetVideoId) {
+      let searchIdx = 0;
+      while ((searchIdx = html.indexOf(targetVideoId, searchIdx)) !== -1) {
+        const start = Math.max(0, searchIdx - 2500);
+        const end = Math.min(html.length, searchIdx + 4500);
+        const chunk = html.slice(start, end);
+
+        const mT =
+          chunk.match(/"publish_time":\s*(\d{10})/i) ||
+          chunk.match(/"creation_time":\s*(\d{10})/i) ||
+          chunk.match(/"created_time":\s*(\d{10})/i) ||
+          chunk.match(/"upload_date":\s*"?(\d{10})"?/i) ||
+          chunk.match(/"timestamp":\s*(\d{10})/i);
+
+        if (mT) {
+          return this.formatTimestamp(mT[1]);
+        }
+        searchIdx += targetVideoId.length;
+      }
+
+      // 1b. Tìm mẫu tiếp giáp gần videoId trong JSON (chẳng hạn "videoId":"..." kèm "publish_time":...)
+      try {
+        const mAdj1 = html.match(
+          new RegExp(`"videoId"\\s*:\\s*"${targetVideoId}"[\\s\\S]{0,500}"(?:publish_time|creation_time)"\\s*:\\s*(\\d{10})`, 'i')
+        );
+        if (mAdj1) return this.formatTimestamp(mAdj1[1]);
+
+        const mAdj2 = html.match(
+          new RegExp(`"(?:publish_time|creation_time)"\\s*:\\s*(\\d{10})[\\s\\S]{0,500}"videoId"\\s*:\\s*"${targetVideoId}"`, 'i')
+        );
+        if (mAdj2) return this.formatTimestamp(mAdj2[1]);
+      } catch {}
+    }
+
+    // 2. Thẻ Meta trong HTML: article:published_time, og:updated_time, video:release_date
+    const mMetaDate =
+      html.match(/<meta\s+(?:property|name)="(?:article:published_time|og:updated_time|video:release_date|uploadDate)"\s+content="([^"]+)"/i) ||
+      html.match(/<meta\s+content="([^"]+)"\s+(?:property|name)="(?:article:published_time|og:updated_time|video:release_date|uploadDate)"/i);
+    if (mMetaDate && mMetaDate[1]) {
+      const parsed = this.parseAnyDate(mMetaDate[1]);
+      if (parsed) return parsed;
+    }
+
+    // 3. LD+JSON schema uploadDate hoặc datePublished
+    const mLd = html.match(/"(?:uploadDate|datePublished|dateCreated)":\s*"([^"]+)"/i);
+    if (mLd && mLd[1]) {
+      const parsed = this.parseAnyDate(mLd[1]);
+      if (parsed) return parsed;
+    }
+
+    // 4. Comet timestamp strategy hoặc creation_story
+    const mCometStory = html.match(/"CometFeedStoryLongerTimestampStrategy"[^}]*"creation_time":\s*(\d{10})/i);
+    if (mCometStory && mCometStory[1]) {
+      return this.formatTimestamp(mCometStory[1]);
+    }
+
+    const mStory =
+      html.match(/"creation_story":\s*\{[^}]*"creation_time":\s*(\d{10})/i) ||
+      html.match(/"story":\s*\{[^}]*"creation_time":\s*(\d{10})/i);
+    if (mStory && mStory[1]) {
+      return this.formatTimestamp(mStory[1]);
+    }
+
+    // 5. Thẻ time hoặc abbr
+    const mTimeTag = html.match(/<time[^>]+datetime="([^"]+)"/i);
+    if (mTimeTag && mTimeTag[1]) {
+      const parsed = this.parseAnyDate(mTimeTag[1]);
+      if (parsed) return parsed;
+    }
+
+    const mAbbr = html.match(/<abbr[^>]+data-utime="(\d+)"/i);
+    if (mAbbr && mAbbr[1]) {
+      return this.formatTimestamp(mAbbr[1]);
+    }
+
+    return '';
+  }
+
+  /**
    * Kiểm tra chuỗi caption có phải là văn bản rác giao diện mặc định của Facebook hay không
    */
   public isBoilerplateCaption(text?: string | null): boolean {
-    if (!text) return true;
-    const clean = text.trim().toLowerCase();
-    const boilerplate = [
-      'video liên quan',
-      'related videos',
-      'xem video liên quan',
-      'xem video',
-      'xem thêm trên facebook',
-      'see more on facebook',
-      'video này hiện không khả dụng',
-      "this video isn't available now",
-      "this video isn't available right now",
-      'đăng nhập',
-      'log in',
-      'sign up',
-      'facebook',
-      'flame',
-      'support',
-      'video',
-    ];
-    return boilerplate.some(
-      (b) => clean === b || clean.startsWith(b + ' ') || clean.endsWith(' ' + b)
-    );
+    return isBoilerplateCaption(text);
+  }
+
+  public isValidAuthor(name?: string | null): boolean {
+    return isValidAuthor(name);
+  }
+
+  public cleanAuthorName(name?: string | null): string {
+    return cleanAuthorName(name);
+  }
+
+  public detectPlatform(url: string): PlatformType {
+    return detectPlatform(url);
+  }
+
+  public detectContentType(url: string): ContentType {
+    return detectContentType(url);
+  }
+
+  public isRedirectUrl(url: string): boolean {
+    return isRedirectUrl(url);
+  }
+
+  public validateScrapeResult(
+    data: Partial<VideoItem> | null | undefined,
+    platform: PlatformType,
+    contentType: ContentType
+  ): ScrapeValidation {
+    return validateScrapeResult(data, platform, contentType);
   }
 
   /**
@@ -160,157 +396,33 @@ export class ScraperService {
    * Làm sạch link: Cắt bỏ các tham số rác sau dấu '?'
    */
   public sanitizeUrl(url: string): string {
-    if (!url) return '';
-    let clean = url.trim();
+    return sanitizeUrl(url);
+  }
 
-    // 1. Nếu link là wrapper redirect Facebook (l.facebook.com/l.php?u=... hoặc lm.facebook.com/l.php?u=...)
-    if (clean.includes('facebook.com/l.php?') || clean.includes('/l.php?u=')) {
-      try {
-        const uObj = new URL(clean.startsWith('http') ? clean : 'https://' + clean);
-        const targetParam = uObj.searchParams.get('u');
-        if (targetParam) {
-          clean = decodeURIComponent(targetParam);
-        }
-      } catch {}
+  private assertSupportedUrl(url: string): void {
+    if (!isFacebookUrl(url) && !isTikTokUrl(url)) {
+      throw new Error('Link không được hỗ trợ. Vui lòng nhập link Facebook hoặc TikTok hợp lệ!');
     }
+  }
 
-    // 2. Thêm giao thức https:// nếu người dùng dán link dạng domain/...
-    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
-      clean = 'https://' + clean;
-    }
-
-    // 3. Chuẩn hóa tên miền phụ Facebook về www.facebook.com
-    clean = clean.replace(
-      /^https?:\/\/(?:web|m|touch|x|mbasic)\.facebook\.com/i,
-      'https://www.facebook.com'
-    );
-
-    // 4. Xử lý các link TikTok
-    if (clean.includes('tiktok.com')) {
-      // 4a. Mobile URL: https://m.tiktok.com/v/123456789.html -> https://www.tiktok.com/video/123456789
-      const mMobileTt = clean.match(/(?:m\.)?tiktok\.com\/v\/(\d+)\.html/i);
-      if (mMobileTt) {
-        return `https://www.tiktok.com/video/${mMobileTt[1]}`;
-      }
-
-      // 4b. Embed URL: https://www.tiktok.com/embed/v2/123456789 -> https://www.tiktok.com/video/123456789
-      const mEmbedTt = clean.match(/tiktok\.com\/embed\/v\d+\/(\d+)/i);
-      if (mEmbedTt) {
-        return `https://www.tiktok.com/video/${mEmbedTt[1]}`;
-      }
-
-      // 4c. Dạng chuẩn @username/video/123456 hoặc @username/photo/123456
-      const mStandardTt = clean.match(/tiktok\.com\/(@[^/?#]+)\/(video|photo)\/(\d+)/i);
-      if (mStandardTt) {
-        return `https://www.tiktok.com/${mStandardTt[1]}/${mStandardTt[2].toLowerCase()}/${mStandardTt[3]}`;
-      }
-
-      // 4d. Các shortlink như vt.tiktok.com/ZS... hoặc vm.tiktok.com/ZS... hoặc tiktok.com/t/ZT...
-      return clean.split('?')[0].split('#')[0].replace(/\/+$/, '');
-    }
-
-    // 5. Xử lý các link Facebook
-    if (clean.includes('facebook.com') || clean.includes('fb.watch')) {
-      // 5a. Dạng Facebook Reel: /reel/123..., /reels/123..., /reel/?v=123..., /reel/pfbid...
-      const mReel = clean.match(/\/reels?\/([a-zA-Z0-9_-]+)/i);
-      if (mReel && mReel[1] !== 'watch' && mReel[1] !== 'videos') {
-        return `https://www.facebook.com/reel/${mReel[1]}`;
-      }
-      if (clean.includes('/reel/') || clean.includes('/reels/')) {
-        try {
-          const u = new URL(clean);
-          const v = u.searchParams.get('v') || u.searchParams.get('video_id');
-          if (v) return `https://www.facebook.com/reel/${v}`;
-        } catch {}
-      }
-
-      // 5b. Dạng Facebook Watch hoặc Video: https://www.facebook.com/watch/?v=123... hoặc video.php?v=123...
-      if (clean.includes('/watch') || clean.includes('video.php')) {
-        try {
-          const u = new URL(clean);
-          const v = u.searchParams.get('v') || u.searchParams.get('video_id');
-          if (v) return `https://www.facebook.com/watch/?v=${v}`;
-        } catch {}
-      }
-
-      // 5c. Dạng Video trên Page/User: /[username]/videos/[slug]/[id]/ hoặc /[username]/videos/[id]/
-      const mVideos = clean.match(/\/videos\/(?:[^/?#]+\/)*(\d+)/i);
-      if (mVideos) {
-        return `https://www.facebook.com/watch/?v=${mVideos[1]}`;
-      }
-
-      // 5d. Dạng Group Posts / Permalinks: /groups/[id]/posts/[postId] hoặc /groups/[id]/permalink/[postId]
-      const mGroupPosts = clean.match(
-        /^https?:\/\/(?:www\.)?facebook\.com\/groups\/([^/?#]+)\/(?:posts|permalink)\/(?:[^/?#]+\/)*([a-zA-Z0-9_-]+)/i
-      );
-      if (mGroupPosts) {
-        return `https://www.facebook.com/groups/${mGroupPosts[1]}/posts/${mGroupPosts[2]}`;
-      }
-
-      // 5e. Dạng User / Page Posts: /[username]/posts/([slug]/)*([id])
-      const mPosts = clean.match(
-        /^https?:\/\/(?:www\.)?facebook\.com\/([^/?#]+)\/posts\/(?:[^/?#]+\/)*([a-zA-Z0-9_-]+)/i
-      );
-      if (mPosts) {
-        return `https://www.facebook.com/${mPosts[1]}/posts/${mPosts[2]}`;
-      }
-
-      // 5f. Dạng permalink.php / story.php / profile.php?story_fbid=...
-      if (
-        clean.includes('permalink.php') ||
-        clean.includes('story.php') ||
-        (clean.includes('profile.php') && (clean.includes('story_fbid=') || clean.includes('fbid=')))
-      ) {
-        try {
-          const u = new URL(clean);
-          const storyFbid = u.searchParams.get('story_fbid') || u.searchParams.get('fbid');
-          const id = u.searchParams.get('id');
-          if (storyFbid && id) {
-            return `https://www.facebook.com/permalink.php?story_fbid=${storyFbid}&id=${id}`;
-          }
-        } catch {}
-      }
-
-      // 5g. Dạng photo / photo.php
-      if (clean.includes('/photo/') || clean.includes('/photo?') || clean.includes('photo.php')) {
-        try {
-          const u = new URL(clean);
-          const keep: string[] = [];
-          const fbid = u.searchParams.get('fbid');
-          const set = u.searchParams.get('set');
-          const id = u.searchParams.get('id');
-          if (fbid) keep.push(`fbid=${fbid}`);
-          if (set) keep.push(`set=${encodeURIComponent(set)}`);
-          if (id) keep.push(`id=${id}`);
-          if (keep.length > 0) {
-            return `${u.origin}${u.pathname}?${keep.join('&')}`;
-          }
-          return clean.split('?')[0];
-        } catch {}
-      }
-
-      // 5h. Dạng share link: /share/r/, /share/v/, /share/p/, /share/
-      if (clean.includes('/share/')) {
-        return clean.split('?')[0].split('#')[0].replace(/\/+$/, '');
-      }
-
-      // 5i. Dạng fb.watch short link
-      if (clean.includes('fb.watch')) {
-        return clean.split('?')[0].split('#')[0].replace(/\/+$/, '');
-      }
-    }
-
-    // Cắt bỏ query params dư thừa cho các link Facebook còn lại (giữ pathname sạch)
-    if (clean.includes('facebook.com')) {
-      try {
-        const u = new URL(clean);
-        if (!u.pathname.includes('permalink.php') && !u.pathname.includes('profile.php') && !u.pathname.includes('photo')) {
-          return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
-        }
-      } catch {}
-    }
-
-    return clean;
+  private mergeScrapeResults(base: VideoItem, candidate: VideoItem): VideoItem {
+    // A fallback must only fill verified gaps; it must never erase data obtained earlier.
+    const isBrowserCandidate = candidate.crawlSource === 'playwright';
+    return {
+      ...base,
+      ...candidate,
+      link: candidate.link || base.link,
+      caption: candidate.caption || base.caption,
+      nguoiDang: candidate.nguoiDang || base.nguoiDang,
+      ngayDang: candidate.ngayDang || base.ngayDang,
+      postId: candidate.postId || base.postId,
+      authorUid: candidate.authorUid || base.authorUid,
+      authorUrl: candidate.authorUrl || base.authorUrl,
+      LuotXem: candidate.LuotXem || base.LuotXem,
+      LuotLike: isBrowserCandidate ? candidate.LuotLike : (candidate.LuotLike || base.LuotLike),
+      LuotComment: isBrowserCandidate ? candidate.LuotComment : (candidate.LuotComment || base.LuotComment),
+      SoLuongNguoiShare: isBrowserCandidate ? candidate.SoLuongNguoiShare : (candidate.SoLuongNguoiShare || base.SoLuongNguoiShare),
+    };
   }
 
   /**
@@ -321,13 +433,28 @@ export class ScraperService {
     const clean = this.sanitizeUrl(url);
 
     try {
-      const isTikTok = clean.includes('tiktok.com');
-      const headers = isTikTok ? this.ttHeaders : this.fbHeaders;
+      this.assertSupportedUrl(clean);
+      const isTikTok = isTikTokUrl(clean);
+      const headers: Record<string, string> = { ...(isTikTok ? this.ttHeaders : this.fbHeaders) };
+
+      if (!isTikTok && this.cookieService) {
+        try {
+          const cookies = this.cookieService.loadCookies();
+          if (Array.isArray(cookies) && cookies.length > 0) {
+            const cookieStr = cookies
+              .filter((c) => c && c.name && c.value)
+              .map((c) => `${c.name}=${c.value}`)
+              .join('; ');
+            if (cookieStr) headers['Cookie'] = cookieStr;
+          }
+        } catch {}
+      }
 
       const res = await fetch(clean, {
         method: 'GET',
         headers,
         redirect: 'follow',
+        signal: AbortSignal.timeout(10000),
       });
 
       let finalUrl = res.url ? this.sanitizeUrl(res.url) : clean;
@@ -347,7 +474,7 @@ export class ScraperService {
           !canonical.endsWith('tiktok.com') &&
           (canonical.includes('/reel/') ||
             canonical.includes('/videos/') ||
-            canonical.includes('/watch') ||
+            (canonical.includes('/watch') && !finalUrl.includes('/videos/')) ||
             canonical.includes('/posts/') ||
             canonical.includes('/groups/') ||
             canonical.includes('/photo') ||
@@ -356,6 +483,44 @@ export class ScraperService {
             canonical.includes('/photo/'))
         ) {
           finalUrl = canonical;
+        }
+      }
+
+      // Nếu finalUrl vẫn là /watch hoặc video.php, thử bóc tách author từ HTML để chuyển thành /[author]/videos/[id]/
+      if (finalUrl.includes('/watch') || finalUrl.includes('video.php')) {
+        const mVid = finalUrl.match(/[?&]v=(\d+)/) || clean.match(/[?&]v=(\d+)/);
+        if (mVid) {
+          const videoId = mVid[1];
+          const mActorUrl =
+            html.match(/"actors":\s*\[\s*\{[^}]*"url":\s*"([^"]+)"/i) ||
+            html.match(/"owner_as_page":\s*\{[^}]*"url":\s*"([^"]+)"/i) ||
+            html.match(/"video_owner":\s*\{[^}]*"url":\s*"([^"]+)"/i);
+          if (mActorUrl && mActorUrl[1]) {
+            const rawAuthorUrl = mActorUrl[1].replace(/\\\//g, '/');
+            const mPeopleId = rawAuthorUrl.match(/\/people\/[^/]+\/(\d+)/i);
+            if (mPeopleId) {
+              finalUrl = `https://www.facebook.com/${mPeopleId[1]}/videos/${videoId}/`;
+            } else {
+              const mSlug = rawAuthorUrl.match(/facebook\.com\/([a-zA-Z0-9._-]+)/i);
+              if (
+                mSlug &&
+                !['watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups', 'people', 'profile.php'].includes(
+                  mSlug[1].toLowerCase()
+                )
+              ) {
+                finalUrl = `https://www.facebook.com/${mSlug[1]}/videos/${videoId}/`;
+              }
+            }
+          }
+          if (finalUrl.includes('/watch') || finalUrl.includes('video.php')) {
+            const mActorId =
+              html.match(/"actors":\s*\[\s*\{[^}]*"id":\s*"(\d+)"/i) ||
+              html.match(/"video_owner":\s*\{[^}]*"id":\s*"(\d+)"/i) ||
+              html.match(/"owner":\s*\{[^}]*"id":\s*"(\d+)"/i);
+            if (mActorId && mActorId[1]) {
+              finalUrl = `https://www.facebook.com/${mActorId[1]}/videos/${videoId}/`;
+            }
+          }
         }
       }
 
@@ -387,6 +552,9 @@ export class ScraperService {
    */
   public async scrapeFacebookHttp(url: string, stt: number = 1): Promise<VideoItem> {
     const cleanUrl = this.sanitizeUrl(url);
+    if (!isFacebookUrl(cleanUrl)) {
+      throw new Error('Link Facebook không hợp lệ');
+    }
 
     let reqHeaders: Record<string, string> = { ...this.fbHeaders };
     try {
@@ -424,15 +592,7 @@ export class ScraperService {
             stt
           );
           if (botResult.nguoiDang || botResult.caption || botResult.LuotXem > 0 || botResult.LuotLike > 0) {
-            result = {
-              ...result,
-              ...botResult,
-              nguoiDang: botResult.nguoiDang || result.nguoiDang,
-              caption: botResult.caption || result.caption,
-              LuotXem: botResult.LuotXem || result.LuotXem,
-              LuotLike: botResult.LuotLike || result.LuotLike,
-              link: botResult.link || result.link,
-            };
+            result = this.mergeScrapeResults(result, botResult);
           }
         }
       } catch {}
@@ -459,7 +619,7 @@ export class ScraperService {
         !canonical.endsWith('facebook.com') &&
         (canonical.includes('/reel/') ||
           canonical.includes('/videos/') ||
-          canonical.includes('/watch') ||
+          (canonical.includes('/watch') && !effectiveUrl.includes('/videos/')) ||
           canonical.includes('/posts/') ||
           canonical.includes('/groups/') ||
           canonical.includes('/photo') ||
@@ -474,8 +634,9 @@ export class ScraperService {
       effectiveUrl.includes('/share/r') ||
       effectiveUrl.includes('/share/v');
     const isPhoto =
-      effectiveUrl.includes('/photo') ||
-      effectiveUrl.includes('photo.php');
+      (effectiveUrl.includes('/photo/') || effectiveUrl.includes('photo.php') || effectiveUrl.includes('/photo?')) &&
+      !effectiveUrl.includes('permalink.php') &&
+      !effectiveUrl.includes('/posts/');
     const isPermalink =
       effectiveUrl.includes('permalink.php') ||
       effectiveUrl.includes('story.php') ||
@@ -483,6 +644,7 @@ export class ScraperService {
       effectiveUrl.includes('/groups/');
 
     const result: VideoItem = {
+      id: `fb-${stt}`,
       STT: stt,
       link: effectiveUrl,
       caption: '',
@@ -586,19 +748,21 @@ export class ScraperService {
       result.caption = ogDesc;
     }
 
-    if (!result.caption) {
-      // Xác định videoId hiện tại để tìm caption chính xác của video này
-      const targetVideoId =
-        effectiveUrl.match(/\/(?:reel|videos)\/(\d+)/)?.[1] ||
-        effectiveUrl.match(/[?&]v=(\d+)/)?.[1];
+    // 2. Bóc tách từ các khối Relay GraphQL script trong HTML (Scoped theo Video/Post ID)
+    const targetVideoId =
+      effectiveUrl.match(/\/(?:reel|videos)\/(\d+)/)?.[1] ||
+      effectiveUrl.match(/[?&]v=(\d+)/)?.[1] ||
+      effectiveUrl.match(/(?:story_fbid|fbid)=(pfbid[a-zA-Z0-9]+|\d+)/)?.[1] ||
+      effectiveUrl.match(/\/posts\/(?:[^/?#]+\/)*(pfbid[a-zA-Z0-9]+|\d+)/)?.[1];
 
+    if (!result.caption) {
       let foundMessage = '';
       if (targetVideoId) {
-        // Duyệt qua tất cả các vị trí của targetVideoId trong HTML để tìm khối chứa message thật (tránh kẹt ở <head>)
+        // Duyệt qua tất cả các vị trí của targetVideoId trong HTML để tìm khối chứa message thật của đúng bài này
         let searchIndex = 0;
         while ((searchIndex = html.indexOf(targetVideoId, searchIndex)) !== -1) {
-          const start = Math.max(0, searchIndex - 2000);
-          const end = Math.min(html.length, searchIndex + 4000);
+          const start = Math.max(0, searchIndex - 2500);
+          const end = Math.min(html.length, searchIndex + 4500);
           const chunk = html.slice(start, end);
 
           const mChunkMsg = chunk.match(/"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*)"/);
@@ -631,26 +795,30 @@ export class ScraperService {
         }
       }
 
-      // Quét khối creation_story (nơi lưu caption chính thức của bài viết)
+      // Quét khối creation_story CHỈ KHI không có targetVideoId hoặc creation_story chứa targetVideoId
       if (!foundMessage) {
         const creationStoryIdx = html.indexOf('"creation_story"');
         if (creationStoryIdx !== -1) {
           const chunk = html.slice(creationStoryIdx, creationStoryIdx + 8000);
-          const mStoryMsg = chunk.match(/"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*)"/);
-          if (mStoryMsg && mStoryMsg[1] && !this.isBoilerplateCaption(mStoryMsg[1])) {
-            foundMessage = mStoryMsg[1];
+          if (!targetVideoId || chunk.includes(targetVideoId)) {
+            const mStoryMsg = chunk.match(/"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*)"/);
+            if (mStoryMsg && mStoryMsg[1] && !this.isBoilerplateCaption(mStoryMsg[1])) {
+              foundMessage = mStoryMsg[1];
+            }
           }
         }
       }
 
-      // Quét khối comet_sections
+      // Quét khối comet_sections CHỈ KHI không có targetVideoId hoặc comet_sections chứa targetVideoId
       if (!foundMessage) {
         const cometIdx = html.indexOf('"comet_sections"');
         if (cometIdx !== -1) {
           const chunk = html.slice(cometIdx, cometIdx + 8000);
-          const mStoryMsg = chunk.match(/"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*)"/);
-          if (mStoryMsg && mStoryMsg[1] && !this.isBoilerplateCaption(mStoryMsg[1])) {
-            foundMessage = mStoryMsg[1];
+          if (!targetVideoId || chunk.includes(targetVideoId)) {
+            const mStoryMsg = chunk.match(/"message":\s*\{\s*"text":\s*"((?:[^"\\]|\\.)*)"/);
+            if (mStoryMsg && mStoryMsg[1] && !this.isBoilerplateCaption(mStoryMsg[1])) {
+              foundMessage = mStoryMsg[1];
+            }
           }
         }
       }
@@ -659,11 +827,6 @@ export class ScraperService {
         result.caption = this.decodeJsonEscapes(foundMessage);
       }
     }
-
-    // 2. Bóc tách từ các khối Relay GraphQL script trong HTML (Scoped theo Video ID)
-    const targetVideoId =
-      effectiveUrl.match(/\/(?:reel|videos)\/(\d+)/)?.[1] ||
-      effectiveUrl.match(/[?&]v=(\d+)/)?.[1];
 
     if (!result.LuotXem && targetVideoId) {
       result.LuotXem = this.extractMetricScopedByVideoId(html, targetVideoId, [
@@ -698,29 +861,22 @@ export class ScraperService {
       ]);
     }
 
-    // Nếu không có videoId hoặc chưa lấy được từ scope videoId, mới tìm trong creation_story hoặc khối chính
-    if (!result.LuotLike) {
-      const mL =
-        html.match(/"reaction_count":\s*\{\s*"count":\s*(\d+)/) ||
-        html.match(/"unified_reactors":\s*\{\s*"count":\s*(\d+)/) ||
-        html.match(/"top_reactions":\s*\{\s*"count":\s*(\d+)/);
-      if (mL) result.LuotLike = parseInt(mL[1], 10);
+    // 2a. Trích xuất ngày đăng (creation_time, publish_time, uploadDate,...)
+    if (!result.ngayDang) {
+      result.ngayDang = this.extractFacebookDate(html, targetVideoId);
     }
 
-    if (!result.LuotComment) {
-      const mC =
-        html.match(/"total_comment_count":\s*(\d+)/) ||
-        html.match(/"comment_count":\s*\{\s*"total_count":\s*(\d+)/);
-      if (mC) result.LuotComment = parseInt(mC[1], 10);
+    // A reshare is a distinct post type. Detect it only from the target story's
+    // data, not from adjacent preloaded stories in the response.
+    if (targetVideoId) {
+      const targetStoryChunk = this.getChunkAroundVideoId(html, targetVideoId);
+      result.isShared =
+        /"(?:is_shared|is_reshare|is_share_story)"\s*:\s*true/i.test(targetStoryChunk) ||
+        /"story_type"\s*:\s*"(?:RESHARE|SHARE)"/i.test(targetStoryChunk) ||
+        /(?:đã chia sẻ (?:một )?(?:bài viết|video|thước phim|ảnh|liên kết)|shared\s+(?:a\s+)?(?:post|video|reel|photo|link))/i.test(
+          this.decodeJsonEscapes(targetStoryChunk)
+        );
     }
-
-    if (!result.SoLuongNguoiShare) {
-      const mS = html.match(/"share_count":\s*\{\s*"count":\s*(\d+)/);
-      if (mS) result.SoLuongNguoiShare = parseInt(mS[1], 10);
-    }
-
-    const mT = html.match(/"creation_time":\s*(\d+)/) || html.match(/"publish_time":\s*(\d+)/);
-    if (mT) result.ngayDang = this.formatTimestamp(mT[1]);
 
     // 2b. Nếu chưa có tác giả, kiểm tra thẻ <title>
     if (!result.nguoiDang) {
@@ -811,8 +967,52 @@ export class ScraperService {
       }
     }
 
-    // 3. Nếu chưa có Lượt xem, fallback qua endpoint Watch nhưng BẮT BUỘC phải scope theo đúng videoId mục tiêu
-    if (!result.LuotXem && isReel) {
+    // Fallback trích xuất authorUid và authorUrl trực tiếp từ URL nếu chưa có
+    if (!result.authorUid) {
+      const mUrlUid = cleanUrl.match(/facebook\.com\/(\d{5,})/i) || cleanUrl.match(/[?&]id=(\d{5,})/i);
+      if (mUrlUid && mUrlUid[1]) {
+        result.authorUid = mUrlUid[1];
+      }
+    }
+    if (!result.authorUrl) {
+      if (result.authorUid) {
+        result.authorUrl = `https://www.facebook.com/${result.authorUid}`;
+      } else {
+        const mSlug = cleanUrl.match(/facebook\.com\/([a-zA-Z0-9._-]+)\/(?:posts|videos|reel)/i);
+        if (mSlug && !['watch', 'reel', 'videos', 'story', 'share', 'permalink.php'].includes(mSlug[1].toLowerCase())) {
+          result.authorUrl = `https://www.facebook.com/${mSlug[1]}`;
+        }
+      }
+    }
+
+    // 2e. Nếu link bài viết đang là /watch hoặc video.php, nâng cấp lên link video gốc theo tác giả
+    if ((effectiveUrl.includes('/watch') || effectiveUrl.includes('video.php')) && targetVideoId) {
+      if (result.authorUrl) {
+        const mPeople = result.authorUrl.match(/\/people\/[^/]+\/(\d+)/i);
+        if (mPeople) {
+          effectiveUrl = `https://www.facebook.com/${mPeople[1]}/videos/${targetVideoId}/`;
+          result.link = effectiveUrl;
+        } else {
+          const mSlug = result.authorUrl.match(/facebook\.com\/([a-zA-Z0-9._-]+)/i);
+          if (
+            mSlug &&
+            !['watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups', 'people', 'profile.php'].includes(
+              mSlug[1].toLowerCase()
+            )
+          ) {
+            effectiveUrl = `https://www.facebook.com/${mSlug[1]}/videos/${targetVideoId}/`;
+            result.link = effectiveUrl;
+          }
+        }
+      }
+      if ((effectiveUrl.includes('/watch') || effectiveUrl.includes('video.php')) && result.authorUid) {
+        effectiveUrl = `https://www.facebook.com/${result.authorUid}/videos/${targetVideoId}/`;
+        result.link = effectiveUrl;
+      }
+    }
+
+    // 3. Nếu chưa có Lượt xem hoặc Ngày đăng, fallback qua endpoint Watch nhưng BẮT BUỘC phải scope theo đúng videoId mục tiêu
+    if ((!result.LuotXem || !result.ngayDang) && isReel) {
       const mId = cleanUrl.match(/\/(?:reel|videos)\/(\d+)/);
       if (mId) {
         try {
@@ -821,12 +1021,20 @@ export class ScraperService {
           });
           if (watchRes.ok) {
             const watchHtml = await watchRes.text();
-            const scopedPlay = this.extractMetricScopedByVideoId(watchHtml, mId[1], [
-              /"play_count":\s*(\d+)/,
-              /"video_view_count":\s*(\d+)/,
-            ]);
-            if (scopedPlay > 0) {
-              result.LuotXem = scopedPlay;
+            if (!result.LuotXem) {
+              const scopedPlay = this.extractMetricScopedByVideoId(watchHtml, mId[1], [
+                /"play_count":\s*(\d+)/,
+                /"video_view_count":\s*(\d+)/,
+              ]);
+              if (scopedPlay > 0) {
+                result.LuotXem = scopedPlay;
+              }
+            }
+            if (!result.ngayDang) {
+              const watchDate = this.extractFacebookDate(watchHtml, mId[1]);
+              if (watchDate) {
+                result.ngayDang = watchDate;
+              }
             }
           }
         } catch {
@@ -844,6 +1052,9 @@ export class ScraperService {
           if (reelRes.LuotXem > 0) {
             result.LuotXem = reelRes.LuotXem;
           }
+          if (!result.ngayDang && reelRes.ngayDang) {
+            result.ngayDang = reelRes.ngayDang;
+          }
         } catch {
           // Bỏ qua lỗi
         }
@@ -852,25 +1063,34 @@ export class ScraperService {
 
     // 5. Trích xuất ID duy nhất của bài viết / video để chống trùng lặp tuyệt đối
     const mPostId =
-      cleanUrl.match(/\/reel\/(\d+)/) ||
+      cleanUrl.match(/\/reel\/([a-zA-Z0-9_-]+)/) ||
       cleanUrl.match(/(?:videos\/|\?v=)(\d+)/) ||
-      cleanUrl.match(/story_fbid=(\d+)/) ||
+      cleanUrl.match(/(?:story_fbid|fbid)=(pfbid[a-zA-Z0-9]+|\d+)/) ||
+      cleanUrl.match(/\/posts\/(?:[^/?#]+\/)*(pfbid[a-zA-Z0-9]+|\d+)/) ||
       html.match(/"video_id":"?(\d+)"?/) ||
-      html.match(/"post_id":"?(\d+)"?/) ||
-      html.match(/\/posts\/[^/]+\/(\d+)/);
+      html.match(/"post_id":"?([a-zA-Z0-9_]+)"?/) ||
+      html.match(/\/posts\/[^/]+\/(pfbid[a-zA-Z0-9]+|\d+)/);
     if (mPostId) {
       result.postId = mPostId[1];
+      if (!result.ngayDang) {
+        result.ngayDang = this.extractFacebookDate(html, result.postId);
+      }
     }
 
-    // Kiểm tra bài viết có hình ảnh đính kèm hay không
+    // Only inspect the data associated with this post. A Facebook response also
+    // contains avatars, suggested posts and preloaded feed cards, none of which
+    // proves that the target post has an image attachment.
+    const targetContentChunk = targetVideoId
+      ? this.getChunkAroundVideoId(html, targetVideoId)
+      : '';
     const hasPhotoAttachment =
-      html.includes('"all_subattachments"') ||
-      html.includes('"subattachments"') ||
-      html.includes('"__typename":"Photo"') ||
-      html.includes('"photo_id"') ||
-      html.includes('/photo/') ||
-      html.includes('/photos/') ||
-      html.includes('photo.php');
+      isPhoto ||
+      Boolean(
+        targetContentChunk.includes('"attachment_style":"photo"') ||
+        targetContentChunk.includes('"attachment_style":"album"') ||
+        targetContentChunk.includes('"attachment_style":"multi_photo"') ||
+        targetContentChunk.includes('"subattachment_style":"photo"')
+      );
     result.hasImage = hasPhotoAttachment;
 
     // Phân loại chuẩn xác theo quy tắc:
@@ -936,6 +1156,9 @@ export class ScraperService {
    */
   public async scrapeTikTokHttp(url: string, stt: number = 1): Promise<VideoItem> {
     const cleanUrl = this.sanitizeUrl(url);
+    if (!isTikTokUrl(cleanUrl)) {
+      throw new Error('Link TikTok không hợp lệ');
+    }
     const res = await fetch(cleanUrl, { headers: this.ttHeaders, redirect: 'follow' });
     const finalHttpUrl = res.url ? this.sanitizeUrl(res.url) : cleanUrl;
     const html = await res.text();
@@ -962,6 +1185,7 @@ export class ScraperService {
     let isPhoto = effectiveUrl.includes('/photo/');
 
     const result: VideoItem = {
+      id: `tt-${stt}`,
       STT: stt,
       link: effectiveUrl,
       caption: '',
@@ -1000,6 +1224,8 @@ export class ScraperService {
           if (item.id && item.author?.uniqueId) {
             const type = isPhoto ? 'photo' : 'video';
             result.link = `https://www.tiktok.com/@${item.author.uniqueId}/${type}/${item.id}`;
+            result.authorUid = item.author.uniqueId;
+            result.authorUrl = `https://www.tiktok.com/@${item.author.uniqueId}`;
           }
 
           const stats = item.stats || item.statsV2 || {};
@@ -1084,6 +1310,14 @@ export class ScraperService {
       if (mAuthor) result.nguoiDang = this.unescapeHtml(mAuthor[1]);
     }
 
+    if (!result.authorUrl && cleanUrl.includes('tiktok.com/@')) {
+      const mTT = cleanUrl.match(/tiktok\.com\/@([^/?#]+)/i);
+      if (mTT) {
+        if (!result.authorUid) result.authorUid = mTT[1];
+        result.authorUrl = `https://www.tiktok.com/@${mTT[1]}`;
+      }
+    }
+
     if (!result.ngayDang) {
       const mT = html.match(/"createTime":\s*"?(\d+)"?/);
       if (mT) result.ngayDang = this.formatTimestamp(mT[1]);
@@ -1130,7 +1364,8 @@ export class ScraperService {
    */
   public async scrapeWithBrowser(url: string, stt: number = 1): Promise<VideoItem> {
     const cleanUrl = this.sanitizeUrl(url);
-    const isTikTok = cleanUrl.includes('tiktok.com');
+    this.assertSupportedUrl(cleanUrl);
+    const isTikTok = isTikTokUrl(cleanUrl);
 
     const browser = await this.getBrowser();
     const context = await browser.newContext({
@@ -1155,13 +1390,39 @@ export class ScraperService {
 
     try {
       const page = await context.newPage();
-      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-      // Nếu là link chuyển tiếp /share/ hoặc fb.watch, chờ thêm để Facebook thực hiện client redirect
-      if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch')) {
-        await page.waitForTimeout(2500);
-      } else {
-        await page.waitForTimeout(1500);
+      // [Method 1] Chặn nạp các tài nguyên media nặng (ảnh, video mp4/webm, fonts) để tăng tốc độ cào gấp 4-5 lần
+      await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        const u = route.request().url().toLowerCase();
+        if (
+          type === 'image' ||
+          type === 'media' ||
+          type === 'font' ||
+          /\.(png|jpe?g|webp|gif|svg|ico|mp4|webm|woff2?|ttf|otf)(\?.*)?$/i.test(u)
+        ) {
+          return route.abort();
+        }
+        return route.continue();
+      });
+
+      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+
+      // Chờ các phần tử chính xuất hiện thay vì waitForTimeout cố định
+      try {
+        await Promise.race([
+          page.waitForSelector(
+            'video, div[role="article"], div[role="main"], div[role="dialog"], [data-e2e="browse-video-desc"], h2, [role="button"], [data-e2e="like-count"]',
+            { timeout: 3500 }
+          ),
+          page.waitForLoadState('networkidle', { timeout: 3000 }),
+        ]);
+      } catch {}
+
+      if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch') || cleanUrl.includes('/watch')) {
+        try {
+          await page.waitForURL((u) => !u.href.includes('/share/') && !u.href.includes('fb.watch') && !u.href.includes('/watch'), { timeout: 3000 });
+        } catch {}
       }
 
       // Xác định URL thực tế sau khi redirect (chẳng hạn từ share link sang /reel/...)
@@ -1195,7 +1456,7 @@ export class ScraperService {
             !cleanCanonical.endsWith('tiktok.com') &&
             (cleanCanonical.includes('/reel/') ||
               cleanCanonical.includes('/videos/') ||
-              cleanCanonical.includes('/watch') ||
+              (cleanCanonical.includes('/watch') && !effectiveUrl.includes('/videos/')) ||
               cleanCanonical.includes('/posts/') ||
               cleanCanonical.includes('permalink.php') ||
               cleanCanonical.includes('/video/'))
@@ -1210,6 +1471,12 @@ export class ScraperService {
         ? this.parseTikTokHtml(html, effectiveUrl, stt)
         : await this.parseFacebookHtml(html, effectiveUrl, stt);
 
+      if (!result.ngayDang && !isTikTok) {
+        result.ngayDang = this.extractFacebookDate(html, result.postId);
+      }
+
+      result.crawlSource = 'playwright';
+
       if (effectiveUrl && effectiveUrl !== cleanUrl && !result.link) {
         result.link = effectiveUrl;
       }
@@ -1217,157 +1484,314 @@ export class ScraperService {
       // Nếu là Facebook mà thiếu tác giả hoặc tương tác, bổ trợ từ DOM thật
       if (!isTikTok) {
         try {
-          const domData = await page.evaluate(() => {
+          const isReel =
+            effectiveUrl.includes('/reel/') ||
+            effectiveUrl.includes('/share/r') ||
+            effectiveUrl.includes('/share/v');
+
+          const domData = await page.evaluate((isReel) => {
+            const parseNum = (t: string | null | undefined): number => {
+              if (!t) return 0;
+              const m = t.trim().match(/^(\d+([,.]\d+)?)\s*([kmb]|nghìn|triệu)?$/i);
+              if (!m) return 0;
+              let n = parseFloat(m[1].replace(',', '.'));
+              const u = (m[3] || '').toLowerCase();
+              if (u === 'k' || u === 'nghìn') n *= 1000;
+              if (u === 'm' || u === 'triệu') n *= 1000000;
+              if (u === 'b') n *= 1000000000;
+              return Math.round(n);
+            };
+
             let author = '';
-            // Tác giả trong Reel thường là thẻ <h2> trên trang
-            const h2 = document.querySelector('h2');
-            if (h2 && h2.textContent && h2.textContent.trim()) {
-              const h2Text = h2.textContent.trim();
-              const invalid = [
-                'trang này hiện không hiển thị',
-                "this page isn't available",
-                'this page isn’t available',
-                'đăng nhập',
-                'log in',
-                'facebook',
-                'error',
-                'lỗi',
-                'reels',
-                'xem thêm',
-              ];
-              if (!invalid.some((inv) => h2Text.toLowerCase().includes(inv))) {
-                author = h2Text;
-              }
-            }
-            if (!author) {
-              const followBtn = document.querySelector(
-                '[aria-label*="Follow" i], [aria-label*="Theo dõi" i]'
-              );
-              if (followBtn) {
-                const aria = followBtn.getAttribute('aria-label') || '';
-                const m = aria.match(/(?:follow|theo dõi)\s+(.+)/i);
-                if (m) author = m[1].trim();
-              }
-            }
-
-            let likes: string | number = '0';
-            let comments: string | number = '0';
-            let shares: string | number = '0';
-
-            const allButtons = Array.from(document.querySelectorAll('[role="button"], button'));
-            for (const btn of allButtons) {
-              const aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-              const text = (btn.textContent || '').trim();
-              const mNum = text.match(/^(\d+([,.]\d+)?\s*[kmb]?)$/i);
-              const num = mNum ? mNum[1] : '';
-
-              if (/^(like|thích|react|bày tỏ)/i.test(aria) || /^(\d+.*(thích|like|người))/i.test(aria)) {
-                if (num && likes === '0') likes = num;
-                const mAria = aria.match(/(\d+([,.]\d+)?\s*[kmb]?)/i);
-                if (mAria && likes === '0') likes = mAria[1];
-              } else if (/comment|bình luận/i.test(aria)) {
-                if (num && comments === '0') comments = num;
-                const mAria = aria.match(/(\d+([,.]\d+)?\s*[kmb]?)\s*(bình luận|comment)/i);
-                if (mAria && comments === '0') comments = mAria[1];
-              } else if (/share|chia sẻ|send this to friends|gửi nội dung này/i.test(aria)) {
-                if (num && shares === '0') shares = num;
-                const mAria = aria.match(/(\d+([,.]\d+)?\s*[kmb]?)\s*(lượt chia sẻ|chia sẻ|share)/i);
-                if (mAria && shares === '0') shares = mAria[1];
-              }
-            }
-
-            // Bổ trợ reaction breakdown nếu chưa có like
-            if (likes === '0') {
-              let totalReactions = 0;
-              let foundAny = false;
-              for (const btn of allButtons) {
-                const aria = btn.getAttribute('aria-label') || '';
-                const mReact = aria.match(/^(?:Like|Love|Care|Haha|Wow|Sad|Angry|Thích|Yêu thích|Thương thương|Haha|Wow|Buồn|Phẫn nộ):\s*(\d+([,.]\d+)?\s*[kmb]?)/i);
-                if (mReact) {
-                  foundAny = true;
-                  let val = parseFloat(mReact[1].replace(',', '.'));
-                  if (/k/i.test(mReact[1])) val *= 1000;
-                  else if (/m/i.test(mReact[1])) val *= 1000000;
-                  totalReactions += val;
-                }
-              }
-              if (foundAny && totalReactions > 0) {
-                likes = String(Math.round(totalReactions));
-              }
-            }
-
-            const bodyText = document.body ? document.body.innerText || '' : '';
-            if (comments === '0') {
-              const mC = bodyText.match(/(\d+([,.]\d+)?\s*([kKmM]|nghìn|triệu)?)\s*(bình luận|comments?)/i);
-              if (mC) comments = mC[1].trim();
-            }
-            if (shares === '0') {
-              const mS = bodyText.match(/(\d+([,.]\d+)?\s*([kKmM]|nghìn|triệu)?)\s*(lượt chia sẻ|chia sẻ|shares?)/i);
-              if (mS) shares = mS[1].trim();
-            }
-
-            // Quét các span số độc lập
-            if (likes === '0' || (comments === '0' && shares === '0')) {
-              const numSpans = Array.from(document.querySelectorAll('span'))
-                .map((s) => (s.innerText || '').trim())
-                .filter((t) => /^\d+([,.]\d+)?\s*[kmb]?$/i.test(t));
-              if (numSpans.length >= 1 && likes === '0') likes = numSpans[0];
-              if (numSpans.length >= 2 && comments === '0') comments = numSpans[1];
-              if (numSpans.length >= 3 && shares === '0') shares = numSpans[2];
-            }
-
+            let caption = '';
+            let likes = 0;
+            let comments = 0;
+            let shares = 0;
+            let views = 0;
+            let hasImage = false;
             let isShared = false;
             let originalAuthor = '';
-            const msgBlocks = document.querySelectorAll('[data-ad-preview="message"]');
-            if (msgBlocks.length >= 2) {
-              isShared = true;
-            }
-            if (/đã chia sẻ|shared a\s+(post|video|reel)/i.test(bodyText)) {
-              isShared = true;
+            let originalPostUrl = '';
+            let dateStr = '';
+            let containerFound = false;
+
+            if (isReel) {
+              // --- SCOPED REEL EXTRACTION ---
+              // Tác giả Reel: thẻ <h2> hoặc link profile trong reel player
+              const h2 = document.querySelector('h2');
+              if (h2 && h2.textContent && h2.textContent.trim()) {
+                author = h2.textContent.trim();
+              }
+              if (!author) {
+                const followBtn = document.querySelector(
+                  '[aria-label*="Follow" i], [aria-label*="Theo dõi" i]'
+                );
+                if (followBtn) {
+                  const aria = followBtn.getAttribute('aria-label') || '';
+                  const m = aria.match(/(?:follow|theo dõi)\s+(.+)/i);
+                  if (m) author = m[1].trim();
+                }
+              }
+
+              // Caption Reel
+              const mainEl = document.querySelector('div[role="main"]') || document.body;
+              const autoTexts = Array.from(mainEl.querySelectorAll('div[dir="auto"]'));
+              for (const el of autoTexts) {
+                if (el.closest('button, [role="button"], h2, form')) continue;
+                const t = el.textContent?.trim() || '';
+                if (t && t.length >= 2 && !/^(like|thích|comment|bình luận|share|chia sẻ|follow|theo dõi)$/i.test(t)) {
+                  caption = t;
+                  break;
+                }
+              }
+
+              // Action buttons của Reel: Nút Like đầu tiên của active reel
+              const allButtons = Array.from(document.querySelectorAll('[role="button"], button'));
+              const likeBtn = allButtons.find((b) => {
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                return aria === 'like' || aria === 'thích' || /^(\d+.*(thích|like|react|bày tỏ))/i.test(aria);
+              });
+
+              if (likeBtn) {
+                containerFound = true;
+                likes = parseNum(likeBtn.textContent);
+                const mAria = (likeBtn.getAttribute('aria-label') || '').match(/(\d+([,.]\d+)?\s*[kmb]?)/i);
+                if (likes === 0 && mAria) likes = parseNum(mAria[1]);
+
+                // Tìm cụm action bar duy nhất chứa likeBtn của active reel (tránh quét sang preloaded reels)
+                const actionContainer =
+                  likeBtn.closest('div[class*="x1n2onr6"]') ||
+                  likeBtn.parentElement?.parentElement;
+                if (actionContainer) {
+                  const btns = Array.from(actionContainer.querySelectorAll('[role="button"], button'));
+                  for (const b of btns) {
+                    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                    const txt = b.textContent?.trim() || '';
+                    if (/comment|bình luận/i.test(aria)) {
+                      comments = parseNum(txt);
+                    } else if (/share|chia sẻ/i.test(aria)) {
+                      shares = parseNum(txt);
+                    }
+                  }
+                }
+              }
+            } else {
+              // --- SCOPED POST / DIALOG EXTRACTION ---
+              const container =
+                document.querySelector('div[role="dialog"]') ||
+                document.querySelector('div[role="main"] div[role="article"]') ||
+                document.querySelector('div[role="main"]') ||
+                document.querySelector('div[role="article"]');
+
+              if (container) {
+                containerFound = true;
+
+                // Tác giả Post
+                const authorEl = container.querySelector(
+                  'h2 strong, h3 strong, h2 a, h3 a, [role="heading"] a, [role="heading"] strong, strong'
+                );
+                if (authorEl && authorEl.textContent?.trim()) {
+                  author = authorEl.textContent.trim();
+                }
+
+                // Caption Post
+                const msgEl = container.querySelector(
+                  'div[data-ad-preview="message"], div[dir="auto"][style*="text-align"]'
+                );
+                if (msgEl && msgEl.textContent) {
+                  caption = msgEl.textContent.trim();
+                } else {
+                  const textNodes = Array.from(container.querySelectorAll('div[dir="auto"]'));
+                  for (const n of textNodes) {
+                    if (n.closest('button, [role="button"], h2, h3, [role="toolbar"], form, [role="article"]')) continue;
+                    const t = n.textContent?.trim() || '';
+                    if (t.length >= 3 && !/^(like|thích|comment|bình luận|share|chia sẻ|gửi|send)$/i.test(t)) {
+                      caption = t;
+                      break;
+                    }
+                  }
+                }
+
+                // Phát hiện ảnh đính kèm (loại trừ avatar và ảnh cover)
+                const postImgs = Array.from(container.querySelectorAll('img')).filter((img) => {
+                  const alt = (img.alt || '').toLowerCase();
+                  const parentA = img.closest('a');
+                  const parentHref = parentA ? (parentA.href || '').toLowerCase() : '';
+                  const parentAria = parentA ? (parentA.getAttribute('aria-label') || '').toLowerCase() : '';
+
+                  if (
+                    alt.includes('ảnh đại diện') ||
+                    alt.includes('profile picture') ||
+                    parentAria.includes('ảnh đại diện') ||
+                    parentAria.includes('profile picture')
+                  ) {
+                    return false;
+                  }
+                  if (img.closest('h2, h3, h4, [role="heading"]')) return false;
+                  if (parentHref.includes('profile.php') || parentHref.includes('/user/')) return false;
+
+                  const r = img.getBoundingClientRect();
+                  const isPhotoLink =
+                    parentHref.includes('/photo') ||
+                    parentHref.includes('photo.php') ||
+                    parentHref.includes('set=pcb.');
+                  return (r.width >= 150 && r.height >= 120) || (isPhotoLink && r.width >= 100);
+                });
+                hasImage = postImgs.length > 0;
+
+                // Likes / Reactions
+                const toolbar = container.querySelector(
+                  '[role="toolbar"], [aria-label*="reacted" i], [aria-label*="bày tỏ" i], [aria-label*="reaction" i]'
+                );
+                if (toolbar) {
+                  likes = parseNum(toolbar.textContent);
+                }
+                if (likes === 0) {
+                  const likeBtn = container.querySelector('[aria-label="Like" i], [aria-label="Thích" i]');
+                  if (likeBtn) likes = parseNum(likeBtn.textContent);
+                }
+
+                // Nút bình luận & chia sẻ bên trong container
+                const actionBtns = Array.from(container.querySelectorAll('[role="button"]'));
+                for (const b of actionBtns) {
+                  const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                  const txt = b.textContent?.trim() || '';
+                  if (/comment|bình luận/i.test(aria)) {
+                    if (txt) comments = parseNum(txt);
+                  } else if (/share|chia sẻ|send this/i.test(aria)) {
+                    if (txt) shares = parseNum(txt);
+                  }
+                }
+
+                // Nếu comments vẫn 0, đếm số comment article hiển thị trực tiếp trong container
+                const visibleComments = container.querySelectorAll(
+                  'div[role="article"][aria-label*="comment" i], div[role="article"][aria-label*="bình luận" i]'
+                );
+                if (comments === 0 && visibleComments.length > 0) {
+                  comments = visibleComments.length;
+                }
+
+                // Phân biệt bài viết chia sẻ và tác giả gốc
+                const headerEl = container.querySelector('h2, h3, h4, [role="heading"]');
+                const headerText = headerEl ? (headerEl.textContent || '') : '';
+                const sharedRegex =
+                  /(?:đã chia sẻ một (?:bài viết|video|thước phim|ảnh|liên kết)|đã chia sẻ bài viết của|đã chia sẻ video của|shared a (?:post|video|reel|link|photo)|shared post from)/i;
+                if (sharedRegex.test(headerText)) {
+                  isShared = true;
+                } else {
+                  const nestedArticles = Array.from(container.querySelectorAll('div[role="article"]')).filter((a) => {
+                    if (a === container) return false;
+                    const aria = (a.getAttribute('aria-label') || '').toLowerCase();
+                    if (aria.includes('comment') || aria.includes('bình luận') || aria.includes('reply')) return false;
+                    return true;
+                  });
+                  if (nestedArticles.length > 0) {
+                    isShared = true;
+                  }
+                }
+
+                // Ngày đăng từ DOM trong container
+                const timeEl = container.querySelector('time');
+                if (timeEl) {
+                  dateStr = timeEl.getAttribute('datetime') || timeEl.textContent?.trim() || '';
+                }
+                if (!dateStr) {
+                  const abbrEl = container.querySelector('abbr[data-utime]');
+                  if (abbrEl) dateStr = abbrEl.getAttribute('data-utime') || '';
+                }
+                if (!dateStr) {
+                  const links = Array.from(container.querySelectorAll('a[role="link"], a'));
+                  for (const a of links) {
+                    const aria = (a.getAttribute('aria-label') || '').trim();
+                    const txt = a.textContent?.trim() || '';
+                    const href = (a.getAttribute('href') || '').toLowerCase();
+                    if (
+                      href.includes('/posts/') ||
+                      href.includes('/permalink') ||
+                      href.includes('story.php') ||
+                      href.includes('/reel/') ||
+                      href.includes('/videos/')
+                    ) {
+                      if (aria && /\d/.test(aria)) {
+                        dateStr = aria;
+                        break;
+                      }
+                      if (txt && /\d/.test(txt)) {
+                        dateStr = txt;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
             }
 
-            return { author, likes, comments, shares, isShared, originalAuthor };
-          });
+            // Fallback ngày đăng từ thẻ script nếu chưa tìm thấy
+            if (!dateStr) {
+              const scripts = Array.from(document.querySelectorAll('script'));
+              for (const s of scripts) {
+                const t = s.textContent || '';
+                const mP = t.match(/"publish_time":\s*(\d{10})/);
+                if (mP) {
+                  dateStr = mP[1];
+                  break;
+                }
+                const mC = t.match(/"creation_time":\s*(\d{10})/);
+                if (mC) {
+                  dateStr = mC[1];
+                  break;
+                }
+              }
+            }
 
-          const invalidAuthors = [
-            'facebook',
-            'trang này hiện không hiển thị',
-            "this page isn't available",
-            'this page isn’t available',
-            'log in to facebook',
-            'đăng nhập facebook',
-            'đăng nhập',
-            'log in',
-            'error',
-            'lỗi',
-            'content not found',
-            'reels',
-          ];
-          if (
-            !result.nguoiDang &&
-            domData.author &&
-            !invalidAuthors.some((inv) => domData.author.toLowerCase().includes(inv))
-          ) {
-            result.nguoiDang = domData.author;
+            return {
+              author,
+              caption,
+              likes,
+              comments,
+              shares,
+              views,
+              hasImage,
+              isShared,
+              originalAuthor,
+              originalPostUrl,
+              dateStr,
+              containerFound,
+            };
+          }, isReel);
+
+          if ((!result.caption || this.isBoilerplateCaption(result.caption)) && domData.caption) {
+            result.caption = this.normalizeCaption(domData.caption);
           }
-          if (!result.LuotLike && domData.likes) {
-            result.LuotLike = this.parseNumber(domData.likes);
+          if (!result.nguoiDang && domData.author) {
+            const cleaned = this.cleanAuthorName(domData.author);
+            if (cleaned) result.nguoiDang = cleaned;
           }
-          if (!result.SoLuongNguoiShare && domData.shares) {
-            result.SoLuongNguoiShare = this.parseNumber(domData.shares);
+          if (!result.ngayDang && domData.dateStr) {
+            const parsed = this.parseAnyDate(domData.dateStr);
+            if (parsed) result.ngayDang = parsed;
           }
-          if (!result.LuotComment && domData.comments) {
-            result.LuotComment = this.parseNumber(domData.comments);
+          if (domData.containerFound) {
+            result.LuotLike = domData.likes;
+            result.LuotComment = domData.comments;
+            result.SoLuongNguoiShare = domData.shares;
+            if (domData.views > 0) {
+              result.LuotXem = domData.views;
+            }
+          }
+          if (domData.hasImage) {
+            result.hasImage = true;
           }
           if (domData.isShared && !result.isShared) {
             result.isShared = true;
           }
           if (domData.originalAuthor && !result.originalAuthor) {
-            result.originalAuthor = domData.originalAuthor;
+            result.originalAuthor = this.cleanAuthorName(domData.originalAuthor);
           }
-        } catch {
-          // Bỏ qua lỗi DOM evaluate
-        }
+          if (domData.originalPostUrl && !result.originalPostUrl) {
+            result.originalPostUrl = this.sanitizeUrl(domData.originalPostUrl);
+          }
+        } catch {}
       }
 
       // Nếu là TikTok mà thiếu tác giả hoặc tương tác, bổ trợ từ DOM thật
@@ -1386,78 +1810,123 @@ export class ScraperService {
               document.querySelector('[data-e2e="share-count"]')?.textContent?.trim() || '0';
             return { author, caption, likes, comments, shares };
           });
-          if (!result.nguoiDang && ttDom.author) result.nguoiDang = ttDom.author;
-          if ((!result.caption || result.caption === 'Không có tiêu đề') && ttDom.caption) result.caption = ttDom.caption;
-          if (!result.LuotLike && ttDom.likes) result.LuotLike = this.parseNumber(ttDom.likes);
-          if (!result.LuotComment && ttDom.comments) result.LuotComment = this.parseNumber(ttDom.comments);
-          if (!result.SoLuongNguoiShare && ttDom.shares) result.SoLuongNguoiShare = this.parseNumber(ttDom.shares);
-        } catch {
-          // Bỏ qua lỗi
-        }
+          if (!result.nguoiDang && ttDom.author) {
+            const cleaned = this.cleanAuthorName(ttDom.author);
+            if (cleaned) result.nguoiDang = cleaned;
+          }
+          if ((!result.caption || result.caption === 'Không có tiêu đề') && ttDom.caption) {
+            result.caption = this.normalizeCaption(ttDom.caption);
+          }
+          if (!result.LuotLike && ttDom.likes && ttDom.likes !== '0') {
+            result.LuotLike = this.parseNumber(ttDom.likes);
+          }
+          if (!result.LuotComment && ttDom.comments && ttDom.comments !== '0') {
+            result.LuotComment = this.parseNumber(ttDom.comments);
+          }
+          if (!result.SoLuongNguoiShare && ttDom.shares && ttDom.shares !== '0') {
+            result.SoLuongNguoiShare = this.parseNumber(ttDom.shares);
+          }
+        } catch {}
       }
 
-      if (
-        result.caption ||
-        result.LuotXem > 0 ||
-        result.LuotLike > 0 ||
-        result.nguoiDang
-      ) {
-        return result;
-      }
       return result;
     } finally {
       await context.close();
     }
   }
 
+  private finalizeVideoItem(item: VideoItem, fallbackUrl: string): VideoItem {
+    if (item.link) {
+      item.link = this.sanitizeUrl(item.link);
+    } else {
+      item.link = fallbackUrl;
+    }
+    if (item.originalPostUrl) {
+      item.originalPostUrl = this.sanitizeUrl(item.originalPostUrl);
+    }
+    if (!item.caption || !item.caption.trim()) {
+      item.caption = 'Không có tiêu đề';
+    } else {
+      item.caption = this.normalizeCaption(item.caption);
+    }
+    if (item.nguoiDang) {
+      item.nguoiDang = this.cleanAuthorName(item.nguoiDang) || item.nguoiDang;
+    }
+    return item;
+  }
+
   /**
-   * Hàm điều phối chính
+   * Hàm điều phối chính:
+   * INPUT → sanitizeUrl() → resolveRedirects() → detectPlatform/ContentType → HTTP scrape → validation → Playwright fallback → finalize
    */
   public async scrapeVideo(url: string, stt: number = 1): Promise<VideoItem> {
-    const cleanUrl = this.sanitizeUrl(url);
+    const sanitizedUrl = this.sanitizeUrl(url);
 
+    // 1. Phân giải các redirect URL (fb.watch, /share/...) trước khi quyết định phương thức crawl
+    let finalUrl = sanitizedUrl;
+    if (this.isRedirectUrl(sanitizedUrl)) {
+      try {
+        finalUrl = await this.resolveFinalUrl(sanitizedUrl);
+      } catch {}
+    }
+
+    const platform = this.detectPlatform(finalUrl);
+    const contentType = this.detectContentType(finalUrl);
+
+    this.assertSupportedUrl(finalUrl);
+
+    this.logger.log(`[SCRAPER:ATTEMPT] platform=${platform} type=${contentType} method=http url=${finalUrl}`);
+
+    // 2. Thử cào qua HTTP trước
+    let result: VideoItem | null = null;
     try {
-      let result: VideoItem | null = null;
-      if (cleanUrl.includes('tiktok.com')) {
-        result = await this.scrapeTikTokHttp(cleanUrl, stt);
-      } else if (cleanUrl.includes('facebook.com') || cleanUrl.includes('fb.watch')) {
-        // Link chia sẻ dạng /share/ hoặc fb.watch yêu cầu chạy browser client redirect, không fetch thẳng được
-        if (!cleanUrl.includes('/share/') && !cleanUrl.includes('fb.watch')) {
-          result = await this.scrapeFacebookHttp(cleanUrl, stt);
-        }
-      } else {
-        throw new Error('Link không được hỗ trợ. Vui lòng nhập link Facebook hoặc TikTok!');
+      if (platform === 'tiktok') {
+        result = await this.scrapeTikTokHttp(finalUrl, stt);
+      } else if (platform === 'facebook') {
+        result = await this.scrapeFacebookHttp(finalUrl, stt);
       }
-
-      const isHttpSuccess = cleanUrl.includes('tiktok.com')
-        ? Boolean(result && (result.caption || result.LuotXem > 0 || result.LuotLike > 0 || result.nguoiDang))
-        : Boolean(result && result.nguoiDang && (result.caption || result.LuotXem > 0 || result.LuotLike > 0));
-
-      if (result && isHttpSuccess) {
-        if (result.link) {
-          result.link = this.sanitizeUrl(result.link);
-        } else {
-          result.link = cleanUrl;
-        }
-        if (!result.caption || !result.caption.trim()) {
-          result.caption = 'Không có tiêu đề';
-        }
-        return result;
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`[HTTP Warn] URL ${cleanUrl} thử qua Playwright: ${msg}`);
+    } catch (httpErr: unknown) {
+      const msg = httpErr instanceof Error ? httpErr.message : String(httpErr);
+      this.logger.warn(`[SCRAPER:HTTP_ERROR] url=${finalUrl} error=${msg}`);
     }
 
-    const browserResult = await this.scrapeWithBrowser(cleanUrl, stt);
-    if (browserResult) {
-      if (browserResult.link) {
-        browserResult.link = this.sanitizeUrl(browserResult.link);
-      }
-      if (!browserResult.caption || !browserResult.caption.trim()) {
-        browserResult.caption = 'Không có tiêu đề';
-      }
+    // 3. Đánh giá chất lượng dữ liệu HTTP
+    const validation = this.validateScrapeResult(result, platform, contentType);
+
+    // Đối với Facebook: nếu cào HTTP mà toàn bộ tương tác đều bằng 0 (metrics = 0)
+    // thì HTTP CHƯA ĐƯỢC coi là đủ (vì Facebook thường hoãn render tương tác sang client-side GraphQL).
+    const isFacebookZeroMetrics = platform === 'facebook' && !validation.hasValidMetrics;
+
+    if (result && validation.valid && validation.confidence >= 50 && !isFacebookZeroMetrics) {
+      result.crawlStatus = 'SCRAPE_SUCCESS';
+      result.confidence = validation.confidence;
+      this.logger.log(
+        `[SCRAPER:SUCCESS] platform=${platform} type=${contentType} method=http postId=${result.postId || 'N/A'} author="${result.nguoiDang}" confidence=${validation.confidence}`
+      );
+      return this.finalizeVideoItem(result, finalUrl);
     }
-    return browserResult;
+
+    if (isFacebookZeroMetrics && !validation.fallbackReason) {
+      validation.fallbackReason = 'facebook_zero_metrics_require_browser';
+    }
+
+    // 4. Fallback sang Playwright Browser nếu dữ liệu HTTP không đủ hoặc nghi ngờ
+    this.logger.log(
+      `[SCRAPER:FALLBACK] reason=${validation.fallbackReason || 'insufficient_confidence'} missing=[${validation.missingFields.join(',')}] confidence=${validation.confidence} from=http to=playwright url=${finalUrl}`
+    );
+
+    const browserResult = await this.scrapeWithBrowser(finalUrl, stt);
+    const mergedResult = result ? this.mergeScrapeResults(result, browserResult) : browserResult;
+    const browserValidation = this.validateScrapeResult(mergedResult, platform, contentType);
+    mergedResult.confidence = browserValidation.confidence;
+    mergedResult.crawlStatus = browserValidation.valid ? 'FALLBACK_SUCCESS' : 'PARTIAL_SUCCESS';
+    mergedResult.fallbackReason = validation.fallbackReason;
+    mergedResult.missingFields = browserValidation.missingFields;
+
+    this.logger.log(
+      `[SCRAPER:DONE] platform=${platform} type=${contentType} method=playwright status=${mergedResult.crawlStatus} postId=${mergedResult.postId || 'N/A'} author="${mergedResult.nguoiDang}" confidence=${browserValidation.confidence}`
+    );
+
+    return this.finalizeVideoItem(mergedResult, finalUrl);
   }
 }

@@ -23,6 +23,15 @@ const getPublicPath = () => {
     ServeStaticModule.forRoot({
       rootPath: getPublicPath(),
       exclude: ['/api/(.*)'],
+      serveStaticOptions: {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('index.html')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+          }
+        },
+      },
     }),
     AuthModule,
     VideosModule,

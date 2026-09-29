@@ -20,6 +20,8 @@ export interface ScannedPostItem {
   sharesCount: string;
   profileSource?: string;
   attachedAuthor?: string;
+  isViolation?: boolean;
+  violationReason?: string;
 }
 
 export interface ProfileScanConfig {

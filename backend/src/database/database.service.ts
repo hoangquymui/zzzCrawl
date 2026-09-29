@@ -19,14 +19,19 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   public getDatabasePath(): string {
-    if (process.cwd().endsWith('backend')) {
-      return path.join(process.cwd(), 'database.sqlite');
-    }
-    const backendPath = path.join(process.cwd(), 'backend', 'database.sqlite');
-    if (fs.existsSync(path.join(process.cwd(), 'backend'))) {
-      return backendPath;
-    }
-    return path.join(process.cwd(), 'database.sqlite');
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
+    const dataPath = path.join(baseDir, 'data', 'database.sqlite');
+    if (fs.existsSync(dataPath)) return dataPath;
+
+    const legacyPath = path.join(baseDir, 'database.sqlite');
+    if (fs.existsSync(legacyPath)) return legacyPath;
+
+    return dataPath;
   }
 
   public initDatabase(): void {
@@ -71,6 +76,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     // 1. Bảng videos (Video & bài viết theo dõi)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS videos (
+        id TEXT,
         STT INTEGER PRIMARY KEY,
         link TEXT NOT NULL UNIQUE,
         caption TEXT,
@@ -88,13 +94,32 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         isShared INTEGER DEFAULT 0,
         originalAuthor TEXT,
         originalAuthorUrl TEXT,
-        originalPostUrl TEXT
+        originalPostUrl TEXT,
+        isViolation INTEGER DEFAULT 0,
+        violationReason TEXT
       );
+      CREATE INDEX IF NOT EXISTS idx_videos_id ON videos(id);
       CREATE INDEX IF NOT EXISTS idx_videos_postId ON videos(postId);
       CREATE INDEX IF NOT EXISTS idx_videos_nguoiDang ON videos(nguoiDang);
     `);
 
     // Migration an toàn cho các cột mới nếu bảng videos đã tồn tại từ trước
+    try {
+      this.db.exec(`ALTER TABLE videos ADD COLUMN id TEXT`);
+    } catch {}
+    try {
+      this.db.exec(`CREATE INDEX IF NOT EXISTS idx_videos_id ON videos(id)`);
+    } catch {}
+    try {
+      this.db.exec(`
+        UPDATE videos 
+        SET id = CASE 
+          WHEN link LIKE '%tiktok.com%' THEN 'tt-' || STT 
+          ELSE 'fb-' || STT 
+        END 
+        WHERE id IS NULL OR id = ''
+      `);
+    } catch {}
     try {
       this.db.exec(`ALTER TABLE videos ADD COLUMN authorUid TEXT`);
     } catch {}
@@ -112,6 +137,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     } catch {}
     try {
       this.db.exec(`ALTER TABLE videos ADD COLUMN originalPostUrl TEXT`);
+    } catch {}
+    try {
+      this.db.exec(`ALTER TABLE videos ADD COLUMN isViolation INTEGER DEFAULT 0`);
+    } catch {}
+    try {
+      this.db.exec(`ALTER TABLE videos ADD COLUMN violationReason TEXT`);
     } catch {}
 
     // 2. Bảng profiles (Hồ sơ người dùng cào được)
@@ -161,11 +192,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   private migrateFromLegacyJson(): void {
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
     // 1. Di chuyển videos_data.json nếu bảng videos đang rỗng
     const videoCount = (this.db.prepare('SELECT COUNT(*) as count FROM videos').get() as { count: number }).count;
     if (videoCount === 0) {
       const candidates = [
-        path.join(process.cwd(), 'backend', 'videos_data.json'),
+        path.join(baseDir, 'data', 'videos_data.json'),
+        path.join(baseDir, 'videos_data.json'),
         path.join(process.cwd(), 'videos_data.json')
       ];
       const videoJson = candidates.find((p) => fs.existsSync(p));
@@ -187,7 +225,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     const profileCount = (this.db.prepare('SELECT COUNT(*) as count FROM profiles').get() as { count: number }).count;
     if (profileCount === 0) {
       const candidates = [
-        path.join(process.cwd(), 'backend', 'profiles_data.json'),
+        path.join(baseDir, 'data', 'profiles_data.json'),
+        path.join(baseDir, 'profiles_data.json'),
         path.join(process.cwd(), 'profiles_data.json')
       ];
       const profileJson = candidates.find((p) => fs.existsSync(p));
@@ -255,7 +294,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     const existingCookie = this.getSetting('cookie');
     if (!existingCookie) {
       const candidates = [
-        path.join(process.cwd(), 'backend', 'cookies.json'),
+        path.join(baseDir, 'data', 'cookies.json'),
+        path.join(baseDir, 'cookies.json'),
         path.join(process.cwd(), 'cookies.json')
       ];
       const cookieJson = candidates.find((p) => fs.existsSync(p));
@@ -282,9 +322,15 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return rows.map((r) => this.mapRowToVideo(r));
   }
 
-  public getVideoByStt(stt: number): VideoItem | null {
-    const row = this.db.prepare('SELECT * FROM videos WHERE STT = ?').get(stt) as any;
+  public getVideoByIdOrStt(idOrStt: string | number): VideoItem | null {
+    const str = String(idOrStt);
+    const num = isNaN(Number(str)) ? -1 : Number(str);
+    const row = this.db.prepare('SELECT * FROM videos WHERE id = ? OR STT = ?').get(str, num) as any;
     return row ? this.mapRowToVideo(row) : null;
+  }
+
+  public getVideoByStt(stt: number): VideoItem | null {
+    return this.getVideoByIdOrStt(stt);
   }
 
   public getVideoByLink(link: string): VideoItem | null {
@@ -300,15 +346,18 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   public upsertVideo(v: VideoItem): void {
     const stmt = this.db.prepare(`
       INSERT INTO videos (
-        STT, link, caption, loai, nguoiDang, authorUid, authorUrl, ngayDang,
+        id, STT, link, caption, loai, nguoiDang, authorUid, authorUrl, ngayDang,
         SoLuongNguoiShare, LuotXem, LuotLike, LuotComment, lastUpdated, postId,
-        isShared, originalAuthor, originalAuthorUrl, originalPostUrl
+        isShared, originalAuthor, originalAuthorUrl, originalPostUrl,
+        isViolation, violationReason
       ) VALUES (
-        @STT, @link, @caption, @loai, @nguoiDang, @authorUid, @authorUrl, @ngayDang,
+        @id, @STT, @link, @caption, @loai, @nguoiDang, @authorUid, @authorUrl, @ngayDang,
         @SoLuongNguoiShare, @LuotXem, @LuotLike, @LuotComment, @lastUpdated, @postId,
-        @isShared, @originalAuthor, @originalAuthorUrl, @originalPostUrl
+        @isShared, @originalAuthor, @originalAuthorUrl, @originalPostUrl,
+        @isViolation, @violationReason
       )
       ON CONFLICT(STT) DO UPDATE SET
+        id = COALESCE(excluded.id, videos.id),
         link = excluded.link,
         caption = excluded.caption,
         loai = excluded.loai,
@@ -325,9 +374,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         isShared = excluded.isShared,
         originalAuthor = excluded.originalAuthor,
         originalAuthorUrl = excluded.originalAuthorUrl,
-        originalPostUrl = excluded.originalPostUrl
+        originalPostUrl = excluded.originalPostUrl,
+        isViolation = excluded.isViolation,
+        violationReason = excluded.violationReason
     `);
     stmt.run({
+      id: v.id || null,
       STT: v.STT,
       link: v.link || '',
       caption: v.caption || '',
@@ -346,21 +398,26 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       originalAuthor: v.originalAuthor || null,
       originalAuthorUrl: v.originalAuthorUrl || null,
       originalPostUrl: v.originalPostUrl || null,
+      isViolation: v.isViolation ? 1 : 0,
+      violationReason: v.violationReason || null,
     });
   }
 
   public saveAllVideos(videos: VideoItem[]): void {
     const upsertStmt = this.db.prepare(`
       INSERT INTO videos (
-        STT, link, caption, loai, nguoiDang, authorUid, authorUrl, ngayDang,
+        id, STT, link, caption, loai, nguoiDang, authorUid, authorUrl, ngayDang,
         SoLuongNguoiShare, LuotXem, LuotLike, LuotComment, lastUpdated, postId,
-        isShared, originalAuthor, originalAuthorUrl, originalPostUrl
+        isShared, originalAuthor, originalAuthorUrl, originalPostUrl,
+        isViolation, violationReason
       ) VALUES (
-        @STT, @link, @caption, @loai, @nguoiDang, @authorUid, @authorUrl, @ngayDang,
+        @id, @STT, @link, @caption, @loai, @nguoiDang, @authorUid, @authorUrl, @ngayDang,
         @SoLuongNguoiShare, @LuotXem, @LuotLike, @LuotComment, @lastUpdated, @postId,
-        @isShared, @originalAuthor, @originalAuthorUrl, @originalPostUrl
+        @isShared, @originalAuthor, @originalAuthorUrl, @originalPostUrl,
+        @isViolation, @violationReason
       )
       ON CONFLICT(STT) DO UPDATE SET
+        id = COALESCE(excluded.id, videos.id),
         link = excluded.link,
         caption = excluded.caption,
         loai = excluded.loai,
@@ -377,7 +434,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         isShared = excluded.isShared,
         originalAuthor = excluded.originalAuthor,
         originalAuthorUrl = excluded.originalAuthorUrl,
-        originalPostUrl = excluded.originalPostUrl
+        originalPostUrl = excluded.originalPostUrl,
+        isViolation = excluded.isViolation,
+        violationReason = excluded.violationReason
     `);
 
     const transaction = this.db.transaction((items: VideoItem[]) => {
@@ -392,6 +451,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
       for (const v of items) {
         upsertStmt.run({
+          id: v.id || null,
           STT: v.STT,
           link: v.link || '',
           caption: v.caption || '',
@@ -410,6 +470,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
           originalAuthor: v.originalAuthor || null,
           originalAuthorUrl: v.originalAuthorUrl || null,
           originalPostUrl: v.originalPostUrl || null,
+          isViolation: v.isViolation ? 1 : 0,
+          violationReason: v.violationReason || null,
         });
       }
     });
@@ -417,13 +479,16 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     transaction(videos);
   }
 
-  public deleteVideo(stt: number): boolean {
-    const result = this.db.prepare('DELETE FROM videos WHERE STT = ?').run(stt);
+  public deleteVideo(idOrStt: string | number): boolean {
+    const str = String(idOrStt);
+    const num = isNaN(Number(str)) ? -1 : Number(str);
+    const result = this.db.prepare('DELETE FROM videos WHERE id = ? OR STT = ?').run(str, num);
     return result.changes > 0;
   }
 
   private mapRowToVideo(row: any): VideoItem {
     return {
+      id: row.id || (row.link?.includes('tiktok.com') ? `tt-${row.STT}` : `fb-${row.STT}`),
       STT: row.STT,
       link: row.link,
       caption: row.caption || '',
@@ -442,6 +507,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       originalAuthor: row.originalAuthor || undefined,
       originalAuthorUrl: row.originalAuthorUrl || undefined,
       originalPostUrl: row.originalPostUrl || undefined,
+      isViolation: Boolean(row.isViolation),
+      violationReason: row.violationReason || undefined,
     };
   }
 
@@ -701,7 +768,21 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.setSetting('cookie_last_check', JSON.stringify(result));
   }
 
-  // ===========================================================================
+  public getCookieSlots(): any[] | null {
+    const raw = this.getSetting('cookie_slots');
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public saveCookieSlots(slots: any[]): void {
+    this.setSetting('cookie_slots', JSON.stringify(slots));
+  }
+
   // DATABASE BACKUP, EXPORT & IMPORT METHODS
   // ===========================================================================
 

@@ -1,5 +1,6 @@
 export interface VideoItem {
-  STT: number;
+  id?: string;
+  STT?: number;
   link: string;
   caption: string;
   loai: string;
@@ -17,6 +18,8 @@ export interface VideoItem {
   originalAuthor?: string;
   originalAuthorUrl?: string;
   originalPostUrl?: string;
+  isViolation?: boolean;
+  violationReason?: string;
 }
 
 export interface DailyStat {

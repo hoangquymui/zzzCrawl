@@ -9,7 +9,7 @@ async function bootstrap() {
   // Bật CORS cho toàn bộ request từ Frontend Vite (cổng 5173, etc.)
   app.enableCors({
     origin: "*",
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
   // Đặt tiền tố toàn cục /api cho tất cả REST endpoints

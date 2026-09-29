@@ -32,10 +32,10 @@ import { QuickPreviewCard } from "./QuickPreviewCard";
 interface VideoTableProps {
   videos: VideoItem[];
   batchProgress: BatchProgress;
-  updatedRowStt: number | null;
-  onRefreshOne: (stt: number) => Promise<void>;
+  updatedRowStt?: number | string | null;
+  onRefreshOne: (idOrStt: string | number) => Promise<void>;
   onRefreshAll: () => Promise<void>;
-  onDelete: (stt: number) => Promise<void>;
+  onDelete: (idOrStt: string | number) => Promise<void>;
   canManage?: boolean;
 }
 
@@ -54,8 +54,8 @@ export const VideoTable: React.FC<VideoTableProps> = ({
   );
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [refreshingStt, setRefreshingStt] = useState<number | null>(null);
-  const [deletingStt, setDeletingStt] = useState<number | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | number | null>(null);
+  const [deletingId, setDeletingId] = useState<string | number | null>(null);
 
   // Phân trang
   const [currentPage, setCurrentPage] = useState(1);
@@ -105,19 +105,18 @@ export const VideoTable: React.FC<VideoTableProps> = ({
   // Kéo giãn độ rộng các cột của bảng
   const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
     {
-      stt: 50,
-      link: 180,
-      caption: 220,
+      stt: 55,
+      nguoiDang: 150,
+      caption: 260,
       loai: 110,
-      nguoiDang: 130,
-      ngayDang: 110,
-      share: 95,
-      view: 105,
+      ngayDang: 105,
       like: 95,
       comment: 95,
-      actions: 95,
+      share: 95,
+      view: 105,
+      actions: 125,
     },
-    'video_table'
+    'video_table_v2'
   );
 
   // Trạng thái menu xổ xuất dữ liệu
@@ -208,21 +207,27 @@ export const VideoTable: React.FC<VideoTableProps> = ({
     return filteredVideos.slice(start, start + pageSize);
   }, [filteredVideos, safePage, pageSize]);
 
-  const handleRefreshSingle = async (stt: number) => {
-    setRefreshingStt(stt);
-    await onRefreshOne(stt);
-    setRefreshingStt(null);
+  const handleRefreshSingle = async (idOrStt: string | number) => {
+    setRefreshingId(idOrStt);
+    try {
+      await onRefreshOne(idOrStt);
+    } finally {
+      setRefreshingId(null);
+    }
   };
 
-  const handleDeleteVideo = async (stt: number) => {
+  const handleDeleteVideo = async (idOrStt: string | number) => {
     if (
       window.confirm(
-        `Bạn có chắc chắn muốn xóa video STT ${stt} khỏi danh sách theo dõi?`,
+        `Bạn có chắc chắn muốn xóa bài viết/video (${idOrStt}) khỏi danh sách theo dõi?`,
       )
     ) {
-      setDeletingStt(stt);
-      await onDelete(stt);
-      setDeletingStt(null);
+      setDeletingId(idOrStt);
+      try {
+        await onDelete(idOrStt);
+      } finally {
+        setDeletingId(null);
+      }
     }
   };
 
@@ -563,97 +568,94 @@ export const VideoTable: React.FC<VideoTableProps> = ({
         <table className="w-full text-xs text-left border-collapse">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/70 text-slate-600 dark:text-slate-400 uppercase font-semibold tracking-wider text-[11px] select-none">
+              {/* 1. STT */}
               <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative px-2 py-3 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
                 STT
                 <ResizeHandle onMouseDown={(e) => handleColResize('stt', e)} />
               </th>
-              <th style={{ width: colWidths.link, minWidth: colWidths.link }} className="relative py-3 px-2.5 border-r border-slate-200 dark:border-slate-800">
-                Link
-                <ResizeHandle onMouseDown={(e) => handleColResize('link', e)} />
+              {/* 2. Người đăng */}
+              <th style={{ width: colWidths.nguoiDang, minWidth: colWidths.nguoiDang }} className="relative py-3 px-2.5 shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Người đăng
+                <ResizeHandle onMouseDown={(e) => handleColResize('nguoiDang', e)} />
               </th>
+              {/* 3. Caption */}
               <th style={{ width: colWidths.caption, minWidth: colWidths.caption }} className="relative py-3 px-2.5 border-r border-slate-200 dark:border-slate-800">
                 Caption
                 <ResizeHandle onMouseDown={(e) => handleColResize('caption', e)} />
               </th>
+              {/* 4. Loại */}
               <th style={{ width: colWidths.loai, minWidth: colWidths.loai }} className="relative py-3 px-2.5 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
                 Loại
                 <ResizeHandle onMouseDown={(e) => handleColResize('loai', e)} />
               </th>
-              <th style={{ width: colWidths.nguoiDang, minWidth: colWidths.nguoiDang }} className="relative py-3 px-2.5 shrink-0 border-r border-slate-200 dark:border-slate-800">
-                Người Đăng
-                <ResizeHandle onMouseDown={(e) => handleColResize('nguoiDang', e)} />
-              </th>
+              {/* 5. Ngày đăng */}
               <th style={{ width: colWidths.ngayDang, minWidth: colWidths.ngayDang }} className="relative py-3 px-2.5 shrink-0 border-r border-slate-200 dark:border-slate-800">
-                Ngày Đăng
+                Ngày đăng
                 <ResizeHandle onMouseDown={(e) => handleColResize('ngayDang', e)} />
               </th>
-              <th style={{ width: colWidths.share, minWidth: colWidths.share }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
-                Lượt Share
-                <ResizeHandle onMouseDown={(e) => handleColResize('share', e)} />
-              </th>
-              <th style={{ width: colWidths.view, minWidth: colWidths.view }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
-                Lượt Xem
-                <ResizeHandle onMouseDown={(e) => handleColResize('view', e)} />
-              </th>
+              {/* 6. Lượt like */}
               <th style={{ width: colWidths.like, minWidth: colWidths.like }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
-                Lượt Like
+                Lượt like
                 <ResizeHandle onMouseDown={(e) => handleColResize('like', e)} />
               </th>
+              {/* 7. lượt comment */}
               <th style={{ width: colWidths.comment, minWidth: colWidths.comment }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
-                Bình Luận
+                lượt comment
                 <ResizeHandle onMouseDown={(e) => handleColResize('comment', e)} />
               </th>
+              {/* 8. lượt Share */}
+              <th style={{ width: colWidths.share, minWidth: colWidths.share }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
+                lượt Share
+                <ResizeHandle onMouseDown={(e) => handleColResize('share', e)} />
+              </th>
+              {/* 9. Lượt xem */}
+              <th style={{ width: colWidths.view, minWidth: colWidths.view }} className="relative px-2 py-3 text-right shrink-0 border-r border-slate-200 dark:border-slate-800">
+                Lượt xem
+                <ResizeHandle onMouseDown={(e) => handleColResize('view', e)} />
+              </th>
+              {/* 10. Thao tác */}
               {canManage && (
                 <th style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="relative px-2 py-3 text-center shrink-0">
-                  Thao Tác
+                  Thao tác
                   <ResizeHandle onMouseDown={(e) => handleColResize('actions', e)} />
                 </th>
               )}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800/80">
-            {paginatedVideos.map((v) => {
+            {paginatedVideos.map((v, idx) => {
+              const autoStt = (safePage - 1) * pageSize + idx + 1;
+              const rowId = v.id || (v.STT !== undefined ? v.STT : autoStt);
               const isFB = (v.loai || "").includes("Facebook");
-              const isUpdated = updatedRowStt === v.STT;
-              const isRefreshing = refreshingStt === v.STT;
-              const isDeleting = deletingStt === v.STT;
+              const isUpdated = updatedRowStt === rowId || (v.STT !== undefined && updatedRowStt === v.STT);
+              const isRefreshing = refreshingId === rowId;
+              const isDeleting = deletingId === rowId;
 
               return (
                 <tr
-                  key={v.STT}
+                  key={rowId}
                   className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition duration-150 ${
                     isUpdated ? "animate-row-pulse" : ""
                   }`}
                 >
-                  {/* STT */}
-                  <td style={{ width: colWidths.stt }} className="py-2.5 px-2 text-center font-bold text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60">
-                    {v.STT}
+                  {/* 1. STT: Tự động đánh số theo vị trí hiển thị, không phụ thuộc vào dữ liệu */}
+                  <td style={{ width: colWidths.stt }} className="py-2.5 px-2 text-center font-bold text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60 font-mono">
+                    {autoStt}
                   </td>
 
-                  {/* Link */}
+                  {/* 2. Người đăng */}
                   <td
-                    style={{ width: colWidths.link, minWidth: colWidths.link, maxWidth: colWidths.link }}
-                    className="py-2.5 px-2.5 border-r border-slate-100 dark:border-slate-800/60 overflow-hidden"
-                    onMouseEnter={(e) => handleRowMouseEnter(v, e)}
-                    onMouseLeave={handleRowMouseLeave}
+                    style={{ width: colWidths.nguoiDang, minWidth: colWidths.nguoiDang, maxWidth: colWidths.nguoiDang }}
+                    className="py-2.5 px-2.5 font-medium text-slate-800 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800/60 overflow-hidden"
                   >
                     <div className="w-full min-w-0 overflow-hidden">
-                      <a
-                        href={v.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium inline-flex items-center gap-1.5 transition w-full min-w-0"
-                        title={v.link}
-                      >
-                        <ExternalLink className="w-3 h-3 text-blue-500 shrink-0 dark:text-blue-400" />
-                        <span className="truncate flex-1 min-w-0 block">
-                          {v.link.replace(/^https?:\/\/(www\.)?/, "")}
-                        </span>
-                      </a>
+                      <div className="truncate w-full min-w-0 block font-semibold" title={v.nguoiDang || "N/A"}>
+                        {v.nguoiDang || "N/A"}
+                      </div>
                     </div>
                   </td>
 
-                  {/* Caption */}
+                  {/* 3. Caption */}
                   <td
                     style={{ width: colWidths.caption, minWidth: colWidths.caption, maxWidth: colWidths.caption }}
                     className="py-2.5 px-2.5 text-slate-800 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800/60 cursor-pointer overflow-hidden"
@@ -672,10 +674,9 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                     </div>
                   </td>
 
-                  {/* Loại & Badge Phân Loại */}
+                  {/* 4. Loại */}
                   <td style={{ width: colWidths.loai, minWidth: colWidths.loai, maxWidth: colWidths.loai }} className="py-2 px-2 text-center whitespace-nowrap border-r border-slate-100 dark:border-slate-800/60">
                     <div className="flex flex-col items-center justify-center gap-1">
-                      {/* Badge Nền tảng: Đổi toàn bộ về Facebook hoặc TikTok */}
                       <span
                         className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
                           isFB
@@ -693,19 +694,7 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                     </div>
                   </td>
 
-                  {/* Người Đăng */}
-                  <td
-                    style={{ width: colWidths.nguoiDang, minWidth: colWidths.nguoiDang, maxWidth: colWidths.nguoiDang }}
-                    className="py-2.5 px-2.5 font-medium text-slate-800 dark:text-slate-200 border-r border-slate-100 dark:border-slate-800/60 overflow-hidden"
-                  >
-                    <div className="w-full min-w-0 overflow-hidden">
-                      <div className="truncate w-full min-w-0 block" title={v.nguoiDang || "N/A"}>
-                        {v.nguoiDang || "N/A"}
-                      </div>
-                    </div>
-                  </td>
-
-                  {/* Ngày Đăng */}
+                  {/* 5. Ngày đăng */}
                   <td
                     style={{ width: colWidths.ngayDang, minWidth: colWidths.ngayDang, maxWidth: colWidths.ngayDang }}
                     className="py-2.5 px-2.5 text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap border-r border-slate-100 dark:border-slate-800/60"
@@ -714,32 +703,41 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                     {v.ngayDang ? v.ngayDang.slice(0, 10) : "N/A"}
                   </td>
 
-                  {/* Lượt Share */}
-                  <td style={{ width: colWidths.share, minWidth: colWidths.share, maxWidth: colWidths.share }} className="py-2.5 px-2 text-right font-mono font-medium text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60">
-                    {formatNumber(v.SoLuongNguoiShare)}
-                  </td>
-
-                  {/* Lượt Xem */}
-                  <td style={{ width: colWidths.view, minWidth: colWidths.view, maxWidth: colWidths.view }} className="py-2.5 px-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 border-r border-slate-100 dark:border-slate-800/60">
-                    {formatNumber(v.LuotXem)}
-                  </td>
-
-                  {/* Lượt Like */}
+                  {/* 6. Lượt like */}
                   <td style={{ width: colWidths.like, minWidth: colWidths.like, maxWidth: colWidths.like }} className="py-2.5 px-2 text-right font-mono font-bold text-pink-600 dark:text-pink-400 border-r border-slate-100 dark:border-slate-800/60">
                     {formatNumber(v.LuotLike)}
                   </td>
 
-                  {/* Bình Luận */}
+                  {/* 7. lượt comment */}
                   <td style={{ width: colWidths.comment, minWidth: colWidths.comment, maxWidth: colWidths.comment }} className="py-2.5 px-2 text-right font-mono font-bold text-amber-600 dark:text-amber-400 border-r border-slate-100 dark:border-slate-800/60">
                     {formatNumber(v.LuotComment)}
                   </td>
 
-                  {/* Thao Tác */}
+                  {/* 8. lượt Share */}
+                  <td style={{ width: colWidths.share, minWidth: colWidths.share, maxWidth: colWidths.share }} className="py-2.5 px-2 text-right font-mono font-medium text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60">
+                    {formatNumber(v.SoLuongNguoiShare)}
+                  </td>
+
+                  {/* 9. Lượt xem */}
+                  <td style={{ width: colWidths.view, minWidth: colWidths.view, maxWidth: colWidths.view }} className="py-2.5 px-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 border-r border-slate-100 dark:border-slate-800/60">
+                    {formatNumber(v.LuotXem)}
+                  </td>
+
+                  {/* 10. Thao tác */}
                   {canManage && (
                     <td style={{ width: colWidths.actions, minWidth: colWidths.actions, maxWidth: colWidths.actions }} className="py-2.5 px-2 text-center whitespace-nowrap">
                       <div className="inline-flex items-center gap-1.5">
+                        <a
+                          href={v.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`Mở link bài viết: ${v.link}`}
+                          className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 text-slate-600 dark:text-slate-300 hover:text-white transition inline-flex items-center justify-center cursor-pointer"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
                         <button
-                          onClick={() => handleRefreshSingle(v.STT)}
+                          onClick={() => handleRefreshSingle(rowId)}
                           disabled={isRefreshing}
                           title="Cập nhật lại số liệu ngay"
                           className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-blue-600 text-slate-600 dark:text-slate-300 hover:text-white transition disabled:opacity-50 cursor-pointer"
@@ -749,9 +747,9 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                           />
                         </button>
                         <button
-                          onClick={() => handleDeleteVideo(v.STT)}
+                          onClick={() => handleDeleteVideo(rowId)}
                           disabled={isDeleting}
-                          title="Xóa video khỏi bảng"
+                          title="Xóa bài viết khỏi bảng"
                           className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-rose-600 text-slate-600 dark:text-slate-300 hover:text-white transition disabled:opacity-50 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

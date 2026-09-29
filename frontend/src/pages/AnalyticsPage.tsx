@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { DailyCharts } from '../components/DailyCharts';
+import { AdvancedCharts } from '../components/AdvancedCharts';
 import { StatsCards } from '../components/StatsCards';
 import { VideoItem } from '../types/video';
 import { Eye, ThumbsUp, Share2 } from 'lucide-react';
@@ -140,6 +141,9 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({ videos }) => {
 
       {/* Daily Video Statistics & 2 Line Charts */}
       <DailyCharts videos={videos} />
+
+      {/* Advanced Visual Analytics: Format Breakdown, Top Channels, Cross-Platform Engagement, Peak Posting Times, Compliance Rate & Viral Ranking */}
+      <AdvancedCharts videos={videos} />
     </div>
   );
 };

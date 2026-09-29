@@ -51,24 +51,42 @@ export class ProfileManagementService implements OnModuleInit {
   }
 
   private getEffectiveStoragePath(): string {
-    if (process.cwd().endsWith('backend')) {
-      return path.join(process.cwd(), 'profiles_data.json');
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
+    const dataPath = path.join(baseDir, 'data', 'profiles_data.json');
+    if (fs.existsSync(dataPath)) return dataPath;
+
+    const legacyPath = path.join(baseDir, 'profiles_data.json');
+    if (fs.existsSync(legacyPath)) return legacyPath;
+
+    const dataDir = path.join(baseDir, 'data');
+    if (!fs.existsSync(dataDir)) {
+      try { fs.mkdirSync(dataDir, { recursive: true }); } catch {}
     }
-    if (fs.existsSync(path.join(process.cwd(), 'backend'))) {
-      return path.join(process.cwd(), 'backend', 'profiles_data.json');
-    }
-    return path.join(process.cwd(), 'profiles_data.json');
+    return dataPath;
   }
 
   private getEffectiveCookiePath(): string {
-    if (process.cwd().endsWith('backend')) {
-      const local = path.join(process.cwd(), 'cookies.json');
-      if (fs.existsSync(local)) return local;
+    if (this.cookieService) {
+      return this.cookieService.getEffectiveCookiePath();
     }
-    if (fs.existsSync(this.cookieFilePath)) return this.cookieFilePath;
-    if (fs.existsSync(this.fallbackCookiePath)) return this.fallbackCookiePath;
-    if (fs.existsSync(this.testUserCookiePath)) return this.testUserCookiePath;
-    return this.cookieFilePath;
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
+    const dataPath = path.join(baseDir, 'data', 'cookies.json');
+    if (fs.existsSync(dataPath)) return dataPath;
+
+    const legacyPath = path.join(baseDir, 'cookies.json');
+    if (fs.existsSync(legacyPath)) return legacyPath;
+
+    return dataPath;
   }
 
   private loadFromDatabase(): void {
@@ -107,6 +125,9 @@ export class ProfileManagementService implements OnModuleInit {
   }
 
   public loadCookies(): any[] {
+    if (this.cookieService) {
+      return this.cookieService.loadCookies();
+    }
     const filePath = this.getEffectiveCookiePath();
     if (!fs.existsSync(filePath)) return [];
 
@@ -169,14 +190,16 @@ export class ProfileManagementService implements OnModuleInit {
   }
 
   public getEffectiveAvatarsDir(): string {
-    let dir: string;
-    if (process.cwd().endsWith('backend')) {
-      dir = path.join(process.cwd(), 'avatars');
-    } else if (fs.existsSync(path.join(process.cwd(), 'backend'))) {
-      dir = path.join(process.cwd(), 'backend', 'avatars');
-    } else {
-      dir = path.join(process.cwd(), 'avatars');
-    }
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
+    const dataAvatars = path.join(baseDir, 'data', 'avatars');
+    const legacyAvatars = path.join(baseDir, 'avatars');
+    let dir = fs.existsSync(dataAvatars) ? dataAvatars : fs.existsSync(legacyAvatars) ? legacyAvatars : dataAvatars;
+
     if (!fs.existsSync(dir)) {
       try {
         fs.mkdirSync(dir, { recursive: true });
@@ -186,6 +209,9 @@ export class ProfileManagementService implements OnModuleInit {
   }
 
   public getCookieString(): string {
+    if (this.cookieService) {
+      return this.cookieService.getCookieString();
+    }
     const cookies = this.loadCookies();
     if (!cookies || cookies.length === 0) return '';
     const essential = ['c_user', 'xs', 'datr', 'fr', 'sb'];
@@ -723,5 +749,278 @@ export class ProfileManagementService implements OnModuleInit {
     } finally {
       this.isScanning = false;
     }
-}
+  }
+
+  /**
+   * Chuẩn hóa tên để đối chiếu so sánh thông minh
+   */
+  public normalizeAuthorName(name: string): string {
+    if (!name) return '';
+    let s = name.normalize('NFC').toLowerCase().trim();
+    // Loại bỏ phần đuôi pipe | ...
+    s = s.replace(/\s*\|.*$/, '').trim();
+    // Loại bỏ phần gạch ngang kèm địa danh hành chính
+    s = s.replace(/\s*-\s*(thành phố|tỉnh|tp\.?|huyện|thị xã|tt\.?|xã|quận).*$/i, '').trim();
+    // Loại bỏ hậu tố on reels / trên reels
+    s = s.replace(/\s+(on|trên)\s+reels.*$/i, '').trim();
+    // Chuẩn hóa viết tắt thường gặp
+    s = s.replace(/\bantt\b/g, 'an ninh trật tự');
+    s = s.replace(/\bca\b/g, 'công an');
+    s = s.replace(/[,.:\-–—_]/g, ' ');
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Tự động thêm profile của người đăng vào database nếu chưa có id trong database
+   */
+  public async ensureProfileForAuthor(authorData: {
+    nguoiDang?: string;
+    authorUid?: string;
+    authorUrl?: string;
+    link?: string;
+  }): Promise<UserProfileItem | null> {
+    const rawName = (authorData.nguoiDang || '').trim();
+    // Bỏ qua nếu không có tên hoặc tên là placeholder
+    if (!rawName || rawName === 'N/A' || rawName === 'Không có tiêu đề' || /^Facebook$/i.test(rawName)) {
+      return null;
+    }
+
+    // Luôn nạp lại danh sách mới nhất từ SQLite
+    this.loadFromDatabase();
+
+    const normAuthor = this.normalizeAuthorName(rawName);
+
+    // 1. Kiểm tra xem người đăng đã có trong database chưa
+    const existing = this.profiles.find((p) => {
+      // 1a. So khớp theo UID
+      if (authorData.authorUid && p.uid && String(p.uid).trim() === String(authorData.authorUid).trim()) {
+        return true;
+      }
+      // 1b. So khớp theo profileUrl / authorUrl
+      if (authorData.authorUrl && p.profileUrl) {
+        const cleanP = p.profileUrl.replace(/\/+$/, '').toLowerCase();
+        const cleanA = authorData.authorUrl.replace(/\/+$/, '').toLowerCase();
+        if (cleanP === cleanA) return true;
+      }
+      // 1c. So khớp nếu link hoặc authorUrl chứa UID của profile
+      if (p.uid && p.uid.length >= 5) {
+        if (authorData.link && authorData.link.includes(p.uid)) return true;
+        if (authorData.authorUrl && authorData.authorUrl.includes(p.uid)) return true;
+      }
+      // 1d. So khớp theo Tên người đăng (chuẩn hóa)
+      if (p.name) {
+        const normPName = this.normalizeAuthorName(p.name);
+        if (normAuthor && normPName && normAuthor === normPName) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (existing) {
+      // Đã có trong database -> không cần tạo mới
+      return existing;
+    }
+
+    // 2. Chưa có trong database -> Tự động xác định thông tin profile và thêm vào
+    let uid = authorData.authorUid?.trim();
+    let profileUrl = (authorData.authorUrl || '').trim();
+    const link = (authorData.link || '').trim();
+
+    // Trích xuất UID nếu chưa có
+    if (!uid) {
+      const mUrlUid = profileUrl.match(/facebook\.com\/(\d{5,})/i) || profileUrl.match(/[?&]id=(\d{5,})/i);
+      if (mUrlUid) {
+        uid = mUrlUid[1];
+      } else {
+        const mLinkUid = link.match(/facebook\.com\/(\d{5,})/i) || link.match(/[?&]id=(\d{5,})/i);
+        if (mLinkUid) uid = mLinkUid[1];
+      }
+    }
+
+    // Trích xuất profileUrl nếu chưa có
+    if (!profileUrl) {
+      if (uid && /^\d+$/.test(uid)) {
+        profileUrl = `https://www.facebook.com/${uid}`;
+      } else if (link.includes('tiktok.com/@')) {
+        const mTT = link.match(/tiktok\.com\/@([^/?#]+)/i);
+        const ttUser = mTT ? mTT[1] : (uid || 'user');
+        profileUrl = `https://www.tiktok.com/@${ttUser}`;
+        if (!uid) uid = ttUser;
+      } else if (link.includes('facebook.com')) {
+        const mSlug = link.match(/facebook\.com\/([a-zA-Z0-9._-]+)\/(?:posts|videos|reel)/i);
+        if (mSlug && !['watch', 'reel', 'videos', 'story', 'share', 'permalink.php'].includes(mSlug[1].toLowerCase())) {
+          profileUrl = `https://www.facebook.com/${mSlug[1]}`;
+        } else if (uid) {
+          profileUrl = `https://www.facebook.com/${uid}`;
+        } else {
+          profileUrl = link;
+        }
+      } else {
+        profileUrl = link;
+      }
+    }
+
+    // 3. Thử cào thông tin chi tiết (Avatar, Bio, UID chuẩn) nếu là Facebook profile URL
+    let newProfile: UserProfileItem | null = null;
+    if (profileUrl && profileUrl.includes('facebook.com')) {
+      try {
+        newProfile = await this.crawlSingleProfileHttp(profileUrl);
+      } catch (crawlErr: any) {
+        this.logger.debug(`Không thể cào trực tiếp profile ${profileUrl}: ${crawlErr?.message}`);
+      }
+    }
+
+    // Nếu không cào được qua HTTP bot, tạo profile trực tiếp từ dữ liệu hiện có
+    if (!newProfile) {
+      const itemId = 'prof_' + (uid || Date.now()) + '_' + Math.random().toString(36).substring(2, 6);
+      newProfile = {
+        id: itemId,
+        profileUrl: profileUrl || `https://www.facebook.com/${uid || Date.now()}`,
+        uid: uid || undefined,
+        name: this.cleanProfileName(rawName) || rawName,
+        avatarUrl: undefined,
+        crawledAt: new Date().toISOString(),
+        status: 'SUCCESS',
+      };
+
+      // Thử tìm avatar nếu có UID số
+      if (uid && /^\d+$/.test(uid)) {
+        try {
+          const avatarDest = await this.getAvatarFilePath(uid);
+          if (avatarDest) {
+            newProfile.avatarUrl = `/api/profile-management/avatar/${uid}`;
+          }
+        } catch {}
+      }
+    }
+
+    // Kiểm tra xem profileUrl hoặc id có trùng trong danh sách hiện tại không
+    const existIdx = this.profiles.findIndex(
+      (p) => p.profileUrl === newProfile!.profileUrl || (newProfile!.uid && p.uid === newProfile!.uid)
+    );
+
+    if (existIdx !== -1) {
+      newProfile.id = this.profiles[existIdx].id;
+      this.profiles[existIdx] = newProfile;
+    } else {
+      this.profiles.unshift(newProfile);
+    }
+
+    this.db.upsertProfile(newProfile);
+    this.saveToDatabase();
+    this.state.profiles = this.profiles;
+    this.state.profilesCount = this.profiles.length;
+
+    this.videosGateway.emitProfileMgmtItem(newProfile);
+    this.emitLog(`✔ [TỰ ĐỘNG THÊM PROFILE] Đã tự động thêm người đăng: "${newProfile.name}" (UID: ${newProfile.uid || 'Chưa rõ'}) vào cơ sở dữ liệu.`);
+
+    return newProfile;
+  }
+
+  /**
+   * Quét UID đối chiếu với UID trong dữ liệu video/bài viết:
+   * Nếu chưa có thì thêm profile, có rồi thì thôi.
+   */
+  public async syncProfilesFromVideos(): Promise<{
+    success: boolean;
+    addedCount: number;
+    totalVideos: number;
+    message: string;
+  }> {
+    this.loadFromDatabase();
+    const videos = this.db.getAllVideos();
+    let addedCount = 0;
+
+    for (const v of videos) {
+      const rawName = (v.nguoiDang || '').trim();
+      if (!rawName || rawName === 'N/A' || rawName === 'Không có tiêu đề' || /^Facebook$/i.test(rawName)) {
+        continue;
+      }
+
+      // Trích xuất UID mục tiêu từ video
+      let targetUid = v.authorUid?.trim();
+      let targetUrl = (v.authorUrl || '').trim();
+      const link = (v.link || '').trim();
+
+      if (!targetUid) {
+        const mUrlUid = targetUrl.match(/facebook\.com\/(\d{5,})/i) || targetUrl.match(/[?&]id=(\d{5,})/i);
+        if (mUrlUid) {
+          targetUid = mUrlUid[1];
+        } else {
+          const mLinkUid = link.match(/facebook\.com\/(\d{5,})/i) || link.match(/[?&]id=(\d{5,})/i);
+          if (mLinkUid) targetUid = mLinkUid[1];
+        }
+      }
+
+      // 1. Kiểm tra đối chiếu xem UID hoặc tác giả đã có trong profiles chưa
+      const normAuthor = this.normalizeAuthorName(rawName);
+      const isAlreadyInProfiles = this.profiles.some((p) => {
+        // So khớp UID
+        if (targetUid && p.uid && String(p.uid).trim() === String(targetUid).trim()) {
+          return true;
+        }
+        // So khớp Profile URL
+        if (targetUrl && p.profileUrl) {
+          const cleanP = p.profileUrl.replace(/\/+$/, '').toLowerCase();
+          const cleanA = targetUrl.replace(/\/+$/, '').toLowerCase();
+          if (cleanP === cleanA) return true;
+        }
+        // So khớp UID có trong link bài viết
+        if (p.uid && p.uid.length >= 5) {
+          if (link && link.includes(p.uid)) return true;
+          if (targetUrl && targetUrl.includes(p.uid)) return true;
+        }
+        // So khớp theo tên chuẩn hóa
+        if (p.name) {
+          const normP = this.normalizeAuthorName(p.name);
+          if (normAuthor && normP && normAuthor === normP) {
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (isAlreadyInProfiles) {
+        // Có rồi thì thôi
+        continue;
+      }
+
+      // 2. Chưa có thì thêm profile
+      try {
+        const newProf = await this.ensureProfileForAuthor({
+          nguoiDang: v.nguoiDang,
+          authorUid: targetUid || v.authorUid,
+          authorUrl: targetUrl || v.authorUrl,
+          link: v.link,
+        });
+
+        if (newProf) {
+          addedCount++;
+          // Cập nhật lại authorUid / authorUrl vào video nếu video chưa có
+          if ((!v.authorUid && newProf.uid) || (!v.authorUrl && newProf.profileUrl)) {
+            if (!v.authorUid && newProf.uid) v.authorUid = newProf.uid;
+            if (!v.authorUrl && newProf.profileUrl) v.authorUrl = newProf.profileUrl;
+            this.db.upsertVideo(v);
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Lỗi khi đồng bộ profile từ video ${v.link}: ${err?.message}`);
+      }
+    }
+
+    const message =
+      addedCount > 0
+        ? `Đã quét ${videos.length} bài viết và thêm mới thành công ${addedCount} profile vào danh sách.`
+        : `Đã quét ${videos.length} bài viết. Tất cả người dùng đều đã có trong danh sách profile.`;
+
+    this.emitLog(`[QUÉT DỰA TRÊN DỮ LIỆU] ${message}`);
+
+    return {
+      success: true,
+      addedCount,
+      totalVideos: videos.length,
+      message,
+    };
+  }
 }

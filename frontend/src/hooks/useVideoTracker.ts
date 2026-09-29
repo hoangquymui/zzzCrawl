@@ -15,7 +15,7 @@ export function useVideoTracker() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [isConnected, setIsConnected] = useState<boolean>(socket.connected);
   const [crawlStatus, setCrawlStatus] = useState<string | null>(null);
-  const [updatedRowStt, setUpdatedRowStt] = useState<number | null>(null);
+  const [updatedRowStt, setUpdatedRowStt] = useState<number | string | null>(null);
   const [toast, setToast] = useState<ToastItem | null>(null);
   const [batchProgress, setBatchProgress] = useState<BatchProgress>({
     isRunning: false,
@@ -47,11 +47,11 @@ export function useVideoTracker() {
   }, []);
 
   // Kích hoạt animation chớp sáng dòng vừa cập nhật
-  const triggerRowPulse = useCallback((stt: number) => {
+  const triggerRowPulse = useCallback((idOrStt: number | string) => {
     if (rowPulseTimerRef.current) {
       clearTimeout(rowPulseTimerRef.current);
     }
-    setUpdatedRowStt(stt);
+    setUpdatedRowStt(idOrStt);
     rowPulseTimerRef.current = setTimeout(() => {
       setUpdatedRowStt(null);
     }, 2500);
@@ -89,26 +89,30 @@ export function useVideoTracker() {
     const onVideoAdded = (newVideo: VideoItem) => {
       setCrawlStatus(null);
       setVideos((prev) => {
-        const exists = prev.find((v) => v.STT === newVideo.STT);
+        const exists = prev.find((v) => (newVideo.id && v.id === newVideo.id) || (newVideo.STT && v.STT === newVideo.STT));
         if (exists) return prev;
         return [...prev, newVideo];
       });
-      addToast(`Đã thêm thành công video STT ${newVideo.STT}`, 'success');
-      triggerRowPulse(newVideo.STT);
+      addToast(`Đã thêm thành công video ${newVideo.id || 'STT ' + newVideo.STT}`, 'success');
+      triggerRowPulse(newVideo.id || newVideo.STT || 0);
     };
 
     const onVideoUpdated = (freshVideo: VideoItem) => {
       setCrawlStatus(null);
       setVideos((prev) =>
-        prev.map((v) => (v.STT === freshVideo.STT ? freshVideo : v))
+        prev.map((v) => ((freshVideo.id && v.id === freshVideo.id) || (freshVideo.STT && v.STT === freshVideo.STT) ? freshVideo : v))
       );
-      triggerRowPulse(freshVideo.STT);
-      addToast(`Đã cập nhật số liệu mới cho STT ${freshVideo.STT}`, 'info');
+      triggerRowPulse(freshVideo.id || freshVideo.STT || 0);
+      addToast(`Đã cập nhật số liệu mới cho ${freshVideo.id || 'STT ' + freshVideo.STT}`, 'info');
     };
 
-    const onVideoDeleted = (payload: { STT: number }) => {
-      setVideos((prev) => prev.filter((v) => v.STT !== payload.STT));
-      addToast(`Đã xóa video STT ${payload.STT}`, 'info');
+    const onVideoDeleted = (payload: { id?: string; STT?: number }) => {
+      setVideos((prev) => prev.filter((v) => {
+        if (payload.id && v.id === payload.id) return false;
+        if (payload.STT && v.STT === payload.STT) return false;
+        return true;
+      }));
+      addToast(`Đã xóa video ${payload.id || (payload.STT ? 'STT ' + payload.STT : '')}`, 'info');
     };
 
     const onRefreshAllStarted = (data: { total: number; concurrency?: number | string }) => {
@@ -180,10 +184,10 @@ export function useVideoTracker() {
     }
   };
 
-  const handleRefreshOne = async (stt: number): Promise<void> => {
+  const handleRefreshOne = async (idOrStt: string | number): Promise<void> => {
     try {
-      setCrawlStatus(`Đang cập nhật lại video STT ${stt}...`);
-      await refreshVideo(stt);
+      setCrawlStatus(`Đang cập nhật lại video ${idOrStt}...`);
+      await refreshVideo(idOrStt);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Lỗi khi làm mới video';
       addToast(message, 'error');
@@ -207,9 +211,9 @@ export function useVideoTracker() {
     }
   };
 
-  const handleDelete = async (stt: number): Promise<void> => {
+  const handleDelete = async (idOrStt: string | number): Promise<void> => {
     try {
-      await deleteVideo(stt);
+      await deleteVideo(idOrStt);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Lỗi khi xóa video';
       addToast(message, 'error');

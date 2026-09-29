@@ -13,6 +13,7 @@ export function exportVideosToCSV(
 
   const headers = [
     'STT',
+    'ID',
     'link',
     'caption',
     'loai',
@@ -29,8 +30,9 @@ export function exportVideosToCSV(
     return `"${s}"`;
   };
 
-  const rows = videos.map((v) => [
-    v.STT,
+  const rows = videos.map((v, idx) => [
+    idx + 1,
+    escapeCSV(v.id || ''),
     escapeCSV(v.link),
     escapeCSV(v.caption && v.caption.trim() ? v.caption : 'Không có tiêu đề'),
     escapeCSV(v.loai),

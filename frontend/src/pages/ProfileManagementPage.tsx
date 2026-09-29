@@ -19,6 +19,7 @@ import {
   AlertCircle,
   ShieldCheck,
   ShieldAlert,
+  Loader2,
 } from 'lucide-react';
 import { socket } from '../services/socket';
 import { profileManagementApi } from '../services/profile-management.service';
@@ -65,7 +66,7 @@ export const ProfileManagementPage: React.FC = () => {
   const [isTerminalOpen, setIsTerminalOpen] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'success' | 'error'>('all');
+  const [isSyncingData, setIsSyncingData] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -222,6 +223,24 @@ export const ProfileManagementPage: React.FC = () => {
     }
   };
 
+  // Quét người dùng dựa trên dữ liệu video/bài viết (đối chiếu UID, nếu chưa có thì thêm profile)
+  const handleSyncFromData = async () => {
+    setIsSyncingData(true);
+    try {
+      const res = await profileManagementApi.syncFromVideos();
+      if (res.addedCount > 0) {
+        showToast(res.message, 'success');
+      } else {
+        showToast(res.message, 'info');
+      }
+      await loadData();
+    } catch (err: any) {
+      showToast(err.message || 'Lỗi khi quét người dùng từ dữ liệu', 'error');
+    } finally {
+      setIsSyncingData(false);
+    }
+  };
+
   // Copy link helper
   const handleCopyLink = (url: string, id: string) => {
     navigator.clipboard.writeText(url).then(() => {
@@ -267,22 +286,15 @@ export const ProfileManagementPage: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  // Filter & Search
+  // Search filter
   const filteredProfiles = profiles.filter((p) => {
-    // Search match
     const term = searchTerm.toLowerCase().trim();
-    const matchesSearch =
-      !term ||
+    if (!term) return true;
+    return (
       (p.name && p.name.toLowerCase().includes(term)) ||
       (p.uid && p.uid.toLowerCase().includes(term)) ||
-      (p.profileUrl && p.profileUrl.toLowerCase().includes(term));
-
-    if (!matchesSearch) return false;
-
-    // Filter match
-    if (filterType === 'success') return p.status === 'SUCCESS';
-    if (filterType === 'error') return p.status !== 'SUCCESS';
-    return true;
+      (p.profileUrl && p.profileUrl.toLowerCase().includes(term))
+    );
   });
 
   // KPI calculations
@@ -564,42 +576,26 @@ export const ProfileManagementPage: React.FC = () => {
           </div>
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-            {/* Filter Tabs */}
-            <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs">
-              <button
-                type="button"
-                onClick={() => setFilterType('all')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                  filterType === 'all'
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                Tất cả
-              </button>
-              <button
-                type="button"
-                onClick={() => setFilterType('success')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                  filterType === 'success'
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                Thành công
-              </button>
-              <button
-                type="button"
-                onClick={() => setFilterType('error')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                  filterType === 'error'
-                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                Lỗi
-              </button>
-            </div>
+            {/* Nút Quét người dùng dựa trên dữ liệu (thay thế Tất cả, Thành công, Lỗi) */}
+            <button
+              type="button"
+              onClick={handleSyncFromData}
+              disabled={isSyncingData}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              title="Quét UID đối chiếu với UID trong dữ liệu, nếu chưa có thì thêm profile, có rồi thì thôi"
+            >
+              {isSyncingData ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Đang quét...</span>
+                </>
+              ) : (
+                <>
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>Quét người dùng dựa trên dữ liệu</span>
+                </>
+              )}
+            </button>
 
             {/* Search Input */}
             <div className="relative">

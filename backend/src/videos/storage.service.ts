@@ -7,11 +7,31 @@ import { DatabaseService } from '../database/database.service';
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private readonly dataFilePath = path.join(process.cwd(), 'videos_data.json');
 
   constructor(private readonly db: DatabaseService) {}
 
+  public getEffectiveDataPath(): string {
+    const baseDir = process.cwd().endsWith('backend')
+      ? process.cwd()
+      : fs.existsSync(path.join(process.cwd(), 'backend'))
+      ? path.join(process.cwd(), 'backend')
+      : process.cwd();
+
+    const dataPath = path.join(baseDir, 'data', 'videos_data.json');
+    if (fs.existsSync(dataPath)) return dataPath;
+
+    const legacyPath = path.join(baseDir, 'videos_data.json');
+    if (fs.existsSync(legacyPath)) return legacyPath;
+
+    const dataDir = path.join(baseDir, 'data');
+    if (!fs.existsSync(dataDir)) {
+      try { fs.mkdirSync(dataDir, { recursive: true }); } catch {}
+    }
+    return dataPath;
+  }
+
   public loadVideos(): VideoItem[] {
+    const dataFilePath = this.getEffectiveDataPath();
     try {
       const videos = this.db.getAllVideos();
       this.logger.log(`[Storage] Đã nạp ${videos.length} video từ SQLite.`);
@@ -20,9 +40,9 @@ export class StorageService {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.error(`Lỗi khi đọc video từ SQLite: ${msg}`);
       // Fallback đọc từ JSON nếu SQLite có lỗi bất ngờ
-      if (fs.existsSync(this.dataFilePath)) {
+      if (fs.existsSync(dataFilePath)) {
         try {
-          const raw = fs.readFileSync(this.dataFilePath, 'utf-8');
+          const raw = fs.readFileSync(dataFilePath, 'utf-8');
           return JSON.parse(raw) as VideoItem[];
         } catch {}
       }
@@ -31,11 +51,12 @@ export class StorageService {
   }
 
   public saveVideos(videos: VideoItem[]): void {
+    const dataFilePath = this.getEffectiveDataPath();
     try {
       this.db.saveAllVideos(videos);
       // Ghi backup nhẹ vào JSON để đảm bảo an toàn tuyệt đối
       try {
-        fs.writeFileSync(this.dataFilePath, JSON.stringify(videos, null, 2), 'utf-8');
+        fs.writeFileSync(dataFilePath, JSON.stringify(videos, null, 2), 'utf-8');
       } catch {}
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

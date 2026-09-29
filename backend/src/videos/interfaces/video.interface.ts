@@ -1,5 +1,6 @@
 export interface VideoItem {
-  STT: number;
+  id?: string;
+  STT?: number;
   link: string;
   caption: string;
   loai: string;
@@ -18,6 +19,13 @@ export interface VideoItem {
   originalAuthor?: string;
   originalAuthorUrl?: string;
   originalPostUrl?: string;
+  isViolation?: boolean;
+  violationReason?: string;
+  crawlSource?: 'http' | 'graphql' | 'dom' | 'aria' | 'playwright';
+  crawlStatus?: 'SCRAPE_SUCCESS' | 'PARTIAL_SUCCESS' | 'FALLBACK_SUCCESS' | 'SCRAPE_FAILED';
+  confidence?: number;
+  fallbackReason?: string;
+  missingFields?: string[];
 }
 
 export interface CrawlStatusEvent {

@@ -26,28 +26,28 @@ export async function addVideo(url: string): Promise<{ success: boolean; data: V
   return json;
 }
 
-export async function refreshVideo(stt: number): Promise<{ success: boolean; data: VideoItem }> {
-  const res = await fetch(`/api/videos/${stt}/refresh`, {
+export async function refreshVideo(idOrStt: string | number): Promise<{ success: boolean; data: VideoItem }> {
+  const res = await fetch(`/api/videos/${encodeURIComponent(String(idOrStt))}/refresh`, {
     method: 'POST',
     headers: { ...getAuthHeaders() },
   });
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(json.message || json.error || `Lỗi cập nhật video STT ${stt}`);
+    throw new Error(json.message || json.error || `Lỗi cập nhật video ${idOrStt}`);
   }
   return json;
 }
 
-export async function deleteVideo(stt: number): Promise<{ success: boolean }> {
-  const res = await fetch(`/api/videos/${stt}`, {
+export async function deleteVideo(idOrStt: string | number): Promise<{ success: boolean }> {
+  const res = await fetch(`/api/videos/${encodeURIComponent(String(idOrStt))}`, {
     method: 'DELETE',
     headers: { ...getAuthHeaders() },
   });
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(json.message || json.error || `Lỗi khi xóa video STT ${stt}`);
+    throw new Error(json.message || json.error || `Lỗi khi xóa video ${idOrStt}`);
   }
   return json;
 }

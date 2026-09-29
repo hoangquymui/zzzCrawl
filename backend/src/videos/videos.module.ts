@@ -10,6 +10,8 @@ import { ProfileManagementController } from './profile-management.controller';
 import { ProfileManagementService } from './profile-management.service';
 import { CookieController } from './cookie.controller';
 import { CookieService } from './cookie.service';
+import { VocabularyController } from './vocabulary.controller';
+import { VocabularyService } from './vocabulary.service';
 
 @Module({
   controllers: [
@@ -17,6 +19,7 @@ import { CookieService } from './cookie.service';
     ProfileScannerController,
     ProfileManagementController,
     CookieController,
+    VocabularyController,
   ],
   providers: [
     VideosService,
@@ -26,6 +29,7 @@ import { CookieService } from './cookie.service';
     ProfileScannerService,
     ProfileManagementService,
     CookieService,
+    VocabularyService,
   ],
   exports: [
     VideosService,
@@ -33,6 +37,7 @@ import { CookieService } from './cookie.service';
     ProfileScannerService,
     ProfileManagementService,
     CookieService,
+    VocabularyService,
   ],
 })
 export class VideosModule {}
