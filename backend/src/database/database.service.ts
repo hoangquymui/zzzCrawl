@@ -5,6 +5,7 @@ import * as path from 'path';
 import { VideoItem } from '../videos/interfaces/video.interface';
 import { UserProfileItem } from '../videos/interfaces/profile-management.interface';
 import { UserPayload } from '../auth/auth.service';
+import { normalizeFacebookUrl } from '../videos/utils/url-cleaner';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const BetterSqlite3 = require('better-sqlite3');
@@ -52,6 +53,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.db.pragma('synchronous = NORMAL');
 
     this.initTables();
+    this.cleanCorruptedUrls();
     this.migrateFromLegacyJson();
   }
 
@@ -189,6 +191,38 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         updatedAt TEXT
       );
     `);
+  }
+
+  private cleanCorruptedUrls(): void {
+    try {
+      const badProfiles = this.db.prepare('SELECT id, profileUrl FROM profiles WHERE profileUrl LIKE ?').all('%u0025%') as { id: string; profileUrl: string }[];
+      if (badProfiles.length > 0) {
+        this.logger.log(`[Database] Đang sửa ${badProfiles.length} profile bị lỗi mã hóa URL...`);
+        const updateStmt = this.db.prepare('UPDATE profiles SET profileUrl = ? WHERE id = ?');
+        for (const p of badProfiles) {
+          const fixed = normalizeFacebookUrl(p.profileUrl);
+          const conflict = this.db.prepare('SELECT id FROM profiles WHERE profileUrl = ? AND id != ?').get(fixed, p.id);
+          if (conflict) {
+            this.db.prepare('DELETE FROM profiles WHERE id = ?').run(p.id);
+          } else {
+            updateStmt.run(fixed, p.id);
+          }
+        }
+      }
+
+      const badVideos = this.db.prepare('SELECT STT, link, authorUrl FROM videos WHERE link LIKE ? OR authorUrl LIKE ?').all('%u0025%', '%u0025%') as { STT: number; link: string; authorUrl: string }[];
+      if (badVideos.length > 0) {
+        this.logger.log(`[Database] Đang sửa ${badVideos.length} video có URL/authorUrl bị lỗi mã hóa...`);
+        const updateStmt = this.db.prepare('UPDATE videos SET link = ?, authorUrl = ? WHERE STT = ?');
+        for (const v of badVideos) {
+          const fixedLink = v.link && v.link.includes('u0025') ? normalizeFacebookUrl(v.link) : v.link;
+          const fixedAuthorUrl = v.authorUrl && v.authorUrl.includes('u0025') ? normalizeFacebookUrl(v.authorUrl) : v.authorUrl;
+          updateStmt.run(fixedLink, fixedAuthorUrl, v.STT);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`[Database] Lỗi khi tự động làm sạch URL: ${e?.message}`);
+    }
   }
 
   private migrateFromLegacyJson(): void {
@@ -381,12 +415,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     stmt.run({
       id: v.id || null,
       STT: v.STT,
-      link: v.link || '',
+      link: v.link ? normalizeFacebookUrl(v.link) : '',
       caption: v.caption || '',
       loai: v.loai || '',
       nguoiDang: v.nguoiDang || '',
       authorUid: v.authorUid || null,
-      authorUrl: v.authorUrl || null,
+      authorUrl: v.authorUrl ? normalizeFacebookUrl(v.authorUrl) : null,
       ngayDang: v.ngayDang || '',
       SoLuongNguoiShare: Number(v.SoLuongNguoiShare) || 0,
       LuotXem: Number(v.LuotXem) || 0,
@@ -453,12 +487,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         upsertStmt.run({
           id: v.id || null,
           STT: v.STT,
-          link: v.link || '',
+          link: v.link ? normalizeFacebookUrl(v.link) : '',
           caption: v.caption || '',
           loai: v.loai || '',
           nguoiDang: v.nguoiDang || '',
           authorUid: v.authorUid || null,
-          authorUrl: v.authorUrl || null,
+          authorUrl: v.authorUrl ? normalizeFacebookUrl(v.authorUrl) : null,
           ngayDang: v.ngayDang || '',
           SoLuongNguoiShare: Number(v.SoLuongNguoiShare) || 0,
           LuotXem: Number(v.LuotXem) || 0,
@@ -490,12 +524,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return {
       id: row.id || (row.link?.includes('tiktok.com') ? `tt-${row.STT}` : `fb-${row.STT}`),
       STT: row.STT,
-      link: row.link,
+      link: normalizeFacebookUrl(row.link),
       caption: row.caption || '',
       loai: row.loai || '',
       nguoiDang: row.nguoiDang || '',
       authorUid: row.authorUid || undefined,
-      authorUrl: row.authorUrl || undefined,
+      authorUrl: row.authorUrl ? normalizeFacebookUrl(row.authorUrl) : undefined,
       ngayDang: row.ngayDang || '',
       SoLuongNguoiShare: Number(row.SoLuongNguoiShare) || 0,
       LuotXem: Number(row.LuotXem) || 0,
@@ -566,7 +600,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
     stmt.run({
       id: p.id,
-      profileUrl: p.profileUrl,
+      profileUrl: normalizeFacebookUrl(p.profileUrl),
       uid: p.uid || null,
       name: p.name,
       birthday: p.birthday || null,
@@ -625,7 +659,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       for (const p of items) {
         upsertStmt.run({
           id: p.id,
-          profileUrl: p.profileUrl,
+          profileUrl: normalizeFacebookUrl(p.profileUrl),
           uid: p.uid || null,
           name: p.name,
           birthday: p.birthday || null,
@@ -656,7 +690,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private mapRowToProfile(row: any): UserProfileItem {
     return {
       id: row.id,
-      profileUrl: row.profileUrl,
+      profileUrl: normalizeFacebookUrl(row.profileUrl),
       uid: row.uid || undefined,
       name: row.name,
       birthday: row.birthday || undefined,

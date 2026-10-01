@@ -9,6 +9,7 @@ import {
 } from './interfaces/profile-management.interface';
 import { VideosGateway } from './videos.gateway';
 import { CookieService } from './cookie.service';
+import { normalizeFacebookUrl } from './utils/url-cleaner';
 
 @Injectable()
 export class ProfileManagementService implements OnModuleInit {
@@ -241,7 +242,11 @@ export class ProfileManagementService implements OnModuleInit {
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.startsWith('image/')) {
         const buffer = Buffer.from(await res.arrayBuffer());
-        if (buffer.length > 500) {
+        // Bỏ qua ảnh placeholder gif (thường < 2500 bytes)
+        if (contentType.includes('gif') && buffer.length < 2500) {
+          return false;
+        }
+        if (buffer.length > 1200) {
           fs.writeFileSync(dest, buffer);
           return true;
         }
@@ -252,31 +257,64 @@ export class ProfileManagementService implements OnModuleInit {
     return false;
   }
 
-  public async getAvatarFilePath(uid: string): Promise<string | null> {
+  public async getAvatarFilePath(uid: string, slug?: string): Promise<string | null> {
     const safeUid = String(uid).replace(/[^a-zA-Z0-9_-]/g, '');
     if (!safeUid) return null;
 
     const avatarsDir = this.getEffectiveAvatarsDir();
     const dest = path.join(avatarsDir, `${safeUid}.jpg`);
 
-    if (fs.existsSync(dest) && fs.statSync(dest).size > 500) {
+    if (fs.existsSync(dest) && fs.statSync(dest).size > 1200) {
       return dest;
     }
 
-    // Thử tải từ Facebook Lookaside qua externalhit bot
-    const lookasideUrl = `https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=${safeUid}`;
-    const ok = await this.downloadAvatar(lookasideUrl, safeUid, true);
-    if (ok && fs.existsSync(dest)) {
-      return dest;
+    // 1. Thử tải từ Facebook Lookaside qua externalhit bot (nếu là ID số)
+    if (/^\d+$/.test(safeUid)) {
+      const lookasideUrl = `https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=${safeUid}`;
+      const ok = await this.downloadAvatar(lookasideUrl, safeUid, true);
+      if (ok && fs.existsSync(dest) && fs.statSync(dest).size > 1200) {
+        return dest;
+      }
     }
 
-    // Thử tải từ Graph API
+    // 2. Thử tải từ Graph API bằng UID (số)
     if (!isNaN(Number(safeUid))) {
       const graphUrl = `https://graph.facebook.com/${safeUid}/picture?type=large`;
       const okGraph = await this.downloadAvatar(graphUrl, safeUid, false);
-      if (okGraph && fs.existsSync(dest)) {
+      if (okGraph && fs.existsSync(dest) && fs.statSync(dest).size > 1200) {
         return dest;
       }
+    }
+
+    // 3. Thử tải từ Graph API bằng slug (tên chữ như anttchanmaylangco)
+    if (slug && typeof slug === 'string' && slug.length > 2 && !/^\d+$/.test(slug)) {
+      const cleanSlug = slug.replace(/[^a-zA-Z0-9._-]/g, '');
+      const graphSlugUrl = `https://graph.facebook.com/${cleanSlug}/picture?type=large`;
+      const okSlug = await this.downloadAvatar(graphSlugUrl, safeUid, false);
+      if (okSlug && fs.existsSync(dest) && fs.statSync(dest).size > 1200) {
+        return dest;
+      }
+    }
+
+    // 4. Thử tải avatar từ TikTok nếu là profile TikTok
+    if (!/^\d+$/.test(safeUid) && (slug?.includes('tiktok') || safeUid.length >= 3)) {
+      try {
+        const ttUrl = `https://www.tiktok.com/@${safeUid.replace(/^@/, '')}`;
+        const ttRes = await fetch(ttUrl, {
+          headers: { 'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (ttRes.ok) {
+          const ttHtml = await ttRes.text();
+          const mOg = ttHtml.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["']/i);
+          if (mOg && mOg[1]) {
+            const okTt = await this.downloadAvatar(this.unescapeHtml(mOg[1]), safeUid, false);
+            if (okTt && fs.existsSync(dest) && fs.statSync(dest).size > 1200) {
+              return dest;
+            }
+          }
+        }
+      } catch {}
     }
 
     return null;
@@ -346,13 +384,45 @@ export class ProfileManagementService implements OnModuleInit {
       const u = new URL(rawUrl);
       const idParam = u.searchParams.get('id');
       if (idParam && /^\d+$/.test(idParam)) return idParam;
+
+      // Hỗ trợ link dạng: /people/<Tên-Trang>/<ID_SỐ>/
+      const mPeople = u.pathname.match(/\/people\/[^/]+\/(\d+)/i);
+      if (mPeople) return mPeople[1];
+
+      // Hỗ trợ link dạng: /p/<Tên-Trang>-<ID_SỐ>/
+      const mP = u.pathname.match(/\/p\/[^-]+-(\d+)/i);
+      if (mP) return mP[1];
+
       const pathParts = u.pathname.split('/').filter(Boolean);
+      for (const part of pathParts) {
+        if (/^\d{5,}$/.test(part)) {
+          return part;
+        }
+      }
       if (pathParts.length > 0 && /^\d+$/.test(pathParts[0])) {
         return pathParts[0];
       }
     } catch {
       // url parse error
     }
+    return undefined;
+  }
+
+  private extractSlugFromUrl(rawUrl: string): string | undefined {
+    try {
+      const u = new URL(rawUrl);
+      const mSlug = u.pathname.match(/^\/([a-zA-Z0-9._-]+)(?:\/|$)/);
+      if (mSlug) {
+        const slug = mSlug[1];
+        const ignored = [
+          'watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups',
+          'people', 'profile.php', 'p', 'permalink.php', 'home.php', 'login', 'checkpoint'
+        ];
+        if (!ignored.includes(slug.toLowerCase()) && !/^\d+$/.test(slug)) {
+          return slug;
+        }
+      }
+    } catch {}
     return undefined;
   }
 
@@ -397,7 +467,7 @@ export class ProfileManagementService implements OnModuleInit {
     const cleanUrls = Array.from(
       new Set(
         urls
-          .map((u) => (u || '').trim())
+          .map((u) => normalizeFacebookUrl(u || '').trim())
           .filter((u) => u.startsWith('http://') || u.startsWith('https://'))
       )
     );
@@ -459,29 +529,56 @@ export class ProfileManagementService implements OnModuleInit {
   }
 
   private async crawlSingleProfileHttp(profileUrl: string): Promise<UserProfileItem> {
-    let uid = this.extractNumericIdFromUrl(profileUrl);
+    profileUrl = normalizeFacebookUrl(profileUrl);
+    const urlNumericId = this.extractNumericIdFromUrl(profileUrl);
+    const urlSlug = this.extractSlugFromUrl(profileUrl);
+    let uid = urlNumericId;
 
-    // Headers giả lập Facebook External Hit bot để máy chủ Facebook trả về đầy đủ Open Graph tags
+    const cookieStr = this.getCookieString();
     const headers: Record<string, string> = {
-      'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
     };
+    if (cookieStr) {
+      headers['Cookie'] = cookieStr;
+    }
 
     let html = '';
     try {
       const res = await fetch(profileUrl, {
         headers,
         redirect: 'follow',
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(15000),
       });
       html = await res.text();
+      
+      // Update profileUrl to Canonical URL if available to resolve numeric IDs to vanity URLs
+      const mCanonical = html.match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i);
+      if (mCanonical && mCanonical[1]) {
+         const cleanCanonical = this.unescapeHtml(mCanonical[1]).trim();
+         if (cleanCanonical.includes('facebook.com')) {
+             profileUrl = normalizeFacebookUrl(cleanCanonical);
+         }
+      } else {
+         const mOgUrl = html.match(/<meta[^>]*property=["']og:url["'][^>]*content=["']([^"']+)["']/i);
+         if (mOgUrl && mOgUrl[1]) {
+             const cleanCanonical = this.unescapeHtml(mOgUrl[1]).trim();
+             if (cleanCanonical.includes('facebook.com')) {
+                 profileUrl = normalizeFacebookUrl(cleanCanonical);
+             }
+         }
+      }
     } catch (fetchErr: any) {
-      this.logger.warn(`Fetch bot không thành công cho ${profileUrl}: ${fetchErr?.message}`);
+      this.logger.warn(`Fetch HTTP không thành công cho ${profileUrl}: ${fetchErr?.message}`);
     }
 
-    // 1. Trích xuất UID thật từ HTML
-    if (html) {
+    // 1. Trích xuất UID thật từ HTML (nếu chưa có uid số từ URL)
+    if (html && (!uid || isNaN(Number(uid)))) {
       const mAndroid = html.match(/fb:\/\/profile\/(\d+)/i);
       if (mAndroid) uid = mAndroid[1];
       if (!uid || isNaN(Number(uid))) {
@@ -527,81 +624,49 @@ export class ProfileManagementService implements OnModuleInit {
     }
 
     // BẮT BUỘC: Profile Facebook hợp lệ phải có Tên thật và UID số từ Facebook
-    // Nếu không có, đây chắc chắn là link chết/sai (ví dụ: hoangquymuibgg, 404, hoặc trang bị khóa)
     if (!name || this.isInvalidName(name) || !uid) {
       throw new Error('Trang cá nhân không tồn tại hoặc link không hợp lệ');
     }
 
-    // 3. Trích xuất Avatar thật (Không bao giờ lấy huy hiệu học vấn hay icon mũ tốt nghiệp)
+    // 3. Trích xuất Avatar thật (Dùng Lookaside / Graph API / Direct CDN)
     let avatarUrl = '';
     let hasAvatar = false;
-    const mOgImage =
-      html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["']/i) ||
-      html.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']*)["']/i);
-    const ogImageUrl = mOgImage ? this.unescapeHtml(mOgImage[1]).trim() : '';
+    const effectiveSlug = urlSlug || this.extractSlugFromUrl(profileUrl);
 
-    // Ưu tiên 1: Tải ảnh đại diện gốc từ Facebook Lookaside bằng crawler bot
-    if (uid && (ogImageUrl.includes('lookaside.fbsbx.com') || !ogImageUrl)) {
-      const lookasideUrl = `https://lookaside.fbsbx.com/lookaside/crawler/media/?media_id=${uid}`;
-      const ok = await this.downloadAvatar(lookasideUrl, uid, true);
-      if (ok) {
-        hasAvatar = true;
-        avatarUrl = `/api/profile-management/avatar/${uid}`;
-      }
-    }
-
-    // Ưu tiên 2: Link CDN trực tiếp trong og:image (nếu có)
-    if (!hasAvatar && ogImageUrl && ogImageUrl.includes('fbcdn.net')) {
-      const ok = await this.downloadAvatar(ogImageUrl, uid || 'avatar', false);
-      if (ok) {
-        hasAvatar = true;
-        avatarUrl = `/api/profile-management/avatar/${uid || 'avatar'}`;
-      } else {
-        avatarUrl = ogImageUrl;
-      }
-    }
-
-    // Ưu tiên 3: Nếu chưa có avatar và có Cookie, thử tải bằng cookie session
-    if (!hasAvatar) {
-      const cookieStr = this.getCookieString();
-      if (cookieStr) {
-        try {
-          const cRes = await fetch(profileUrl, {
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8',
-              'Cookie': cookieStr,
-            },
-            signal: AbortSignal.timeout(10000),
-          });
-          const cHtml = await cRes.text();
-          const mPic =
-            cHtml.match(/"profilePicLarge":\{"uri":"([^"]+)"\}/) ||
-            cHtml.match(/"profilePicMedium":\{"uri":"([^"]+)"\}/) ||
-            cHtml.match(/"profile_picture":\{"uri":"([^"]+)"\}/);
-          if (mPic && mPic[1]) {
-            const picUri = this.unescapeHtml(mPic[1].replace(/\\\//g, '/'));
-            const ok = await this.downloadAvatar(picUri, uid || 'avatar', false);
-            if (ok) {
-              hasAvatar = true;
-              avatarUrl = `/api/profile-management/avatar/${uid || 'avatar'}`;
-            }
-          }
-        } catch (cookieFetchErr: any) {
-          this.logger.warn(`Cookie fetch thất bại cho ${profileUrl}: ${cookieFetchErr?.message}`);
+    // Thử tải bằng danh sách candidate IDs (urlNumericId trước, sau đó uid)
+    const candidateIds = Array.from(new Set([urlNumericId, uid])).filter(Boolean) as string[];
+    for (const candId of candidateIds) {
+      if (!hasAvatar) {
+        const dest = await this.getAvatarFilePath(candId, effectiveSlug);
+        if (dest) {
+          hasAvatar = true;
+          avatarUrl = `/api/profile-management/avatar/${candId}`;
+          uid = candId;
+          break;
         }
       }
     }
 
-    // Ưu tiên 4: Fallback Facebook Graph API
-    if (!hasAvatar && uid && !isNaN(Number(uid))) {
-      const graphUrl = `https://graph.facebook.com/${uid}/picture?type=large`;
-      const ok = await this.downloadAvatar(graphUrl, uid, false);
-      if (ok) {
+    if (!hasAvatar && effectiveSlug) {
+      const dest = await this.getAvatarFilePath(effectiveSlug, effectiveSlug);
+      if (dest) {
         hasAvatar = true;
-        avatarUrl = `/api/profile-management/avatar/${uid}`;
+        avatarUrl = `/api/profile-management/avatar/${effectiveSlug}`;
+      }
+    }
+
+    // Fallback: Tìm link CDN trực tiếp trong og:image nếu Lookaside/Graph chưa có
+    if (!hasAvatar && html) {
+      const mOgImage =
+        html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["']/i) ||
+        html.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']*)["']/i);
+      const ogImageUrl = mOgImage ? this.unescapeHtml(mOgImage[1]).trim() : '';
+      if (ogImageUrl && ogImageUrl.includes('fbcdn.net')) {
+        const ok = await this.downloadAvatar(ogImageUrl, uid || 'avatar', false);
+        if (ok) {
+          hasAvatar = true;
+          avatarUrl = `/api/profile-management/avatar/${uid || 'avatar'}`;
+        }
       }
     }
 
@@ -824,7 +889,7 @@ export class ProfileManagementService implements OnModuleInit {
 
     // 2. Chưa có trong database -> Tự động xác định thông tin profile và thêm vào
     let uid = authorData.authorUid?.trim();
-    let profileUrl = (authorData.authorUrl || '').trim();
+    let profileUrl = normalizeFacebookUrl((authorData.authorUrl || '').trim());
     const link = (authorData.link || '').trim();
 
     // Trích xuất UID nếu chưa có
@@ -838,7 +903,21 @@ export class ProfileManagementService implements OnModuleInit {
       }
     }
 
-    // Trích xuất profileUrl nếu chưa có
+    // Trích xuất profileUrl nếu chưa có hoặc nếu profileUrl đang là số mà link bài viết có tên chữ đẹp
+    const isNumericUrl = !profileUrl || /facebook\.com\/\d{5,}\/?$/i.test(profileUrl) || /facebook\.com\/profile\.php\?id=\d+/i.test(profileUrl);
+    if (isNumericUrl && link.includes('facebook.com')) {
+      const mSlug = link.match(/facebook\.com\/([a-zA-Z0-9._-]+)\/(?:posts|videos|reel)/i);
+      if (
+        mSlug &&
+        !['watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups', 'people', 'p', 'permalink.php'].includes(
+          mSlug[1].toLowerCase()
+        ) &&
+        !/^\d+$/.test(mSlug[1])
+      ) {
+        profileUrl = `https://www.facebook.com/${mSlug[1]}`;
+      }
+    }
+
     if (!profileUrl) {
       if (uid && /^\d+$/.test(uid)) {
         profileUrl = `https://www.facebook.com/${uid}`;
@@ -847,19 +926,12 @@ export class ProfileManagementService implements OnModuleInit {
         const ttUser = mTT ? mTT[1] : (uid || 'user');
         profileUrl = `https://www.tiktok.com/@${ttUser}`;
         if (!uid) uid = ttUser;
-      } else if (link.includes('facebook.com')) {
-        const mSlug = link.match(/facebook\.com\/([a-zA-Z0-9._-]+)\/(?:posts|videos|reel)/i);
-        if (mSlug && !['watch', 'reel', 'videos', 'story', 'share', 'permalink.php'].includes(mSlug[1].toLowerCase())) {
-          profileUrl = `https://www.facebook.com/${mSlug[1]}`;
-        } else if (uid) {
-          profileUrl = `https://www.facebook.com/${uid}`;
-        } else {
-          profileUrl = link;
-        }
       } else {
         profileUrl = link;
       }
     }
+
+    profileUrl = normalizeFacebookUrl(profileUrl);
 
     // 3. Thử cào thông tin chi tiết (Avatar, Bio, UID chuẩn) nếu là Facebook profile URL
     let newProfile: UserProfileItem | null = null;
@@ -876,7 +948,7 @@ export class ProfileManagementService implements OnModuleInit {
       const itemId = 'prof_' + (uid || Date.now()) + '_' + Math.random().toString(36).substring(2, 6);
       newProfile = {
         id: itemId,
-        profileUrl: profileUrl || `https://www.facebook.com/${uid || Date.now()}`,
+        profileUrl: normalizeFacebookUrl(profileUrl || `https://www.facebook.com/${uid || Date.now()}`),
         uid: uid || undefined,
         name: this.cleanProfileName(rawName) || rawName,
         avatarUrl: undefined,
@@ -884,12 +956,15 @@ export class ProfileManagementService implements OnModuleInit {
         status: 'SUCCESS',
       };
 
-      // Thử tìm avatar nếu có UID số
-      if (uid && /^\d+$/.test(uid)) {
+      // Thử tìm avatar nếu có UID hoặc slug
+      const urlId = this.extractNumericIdFromUrl(newProfile.profileUrl);
+      const slug = this.extractSlugFromUrl(newProfile.profileUrl);
+      const targetId = uid || urlId || slug;
+      if (targetId) {
         try {
-          const avatarDest = await this.getAvatarFilePath(uid);
+          const avatarDest = await this.getAvatarFilePath(targetId, slug);
           if (avatarDest) {
-            newProfile.avatarUrl = `/api/profile-management/avatar/${uid}`;
+            newProfile.avatarUrl = `/api/profile-management/avatar/${targetId}`;
           }
         } catch {}
       }
@@ -955,7 +1030,7 @@ export class ProfileManagementService implements OnModuleInit {
 
       // 1. Kiểm tra đối chiếu xem UID hoặc tác giả đã có trong profiles chưa
       const normAuthor = this.normalizeAuthorName(rawName);
-      const isAlreadyInProfiles = this.profiles.some((p) => {
+      const isAlreadyInProfiles = this.profiles.find((p) => {
         // So khớp UID
         if (targetUid && p.uid && String(p.uid).trim() === String(targetUid).trim()) {
           return true;
@@ -982,7 +1057,55 @@ export class ProfileManagementService implements OnModuleInit {
       });
 
       if (isAlreadyInProfiles) {
-        // Có rồi thì thôi
+        const existingProf = isAlreadyInProfiles;
+        // TỰ ĐỘNG CẬP NHẬT / SỬA LỖI CHO PROFILE ĐÃ TỒN TẠI
+        let modified = false;
+
+        // a. Đổi link ID số (như /122093907776942463) sang link tên chữ chuẩn (như /anttchanmaylangco) nếu bài viết có slug đẹp
+        const isNumericUrl = /facebook\.com\/\d{5,}\/?$/i.test(existingProf.profileUrl) || /facebook\.com\/profile\.php\?id=\d+/i.test(existingProf.profileUrl);
+        if (isNumericUrl && link.includes('facebook.com')) {
+          const mSlug = link.match(/facebook\.com\/([a-zA-Z0-9._-]+)\/(?:posts|videos|reel)/i);
+          if (
+            mSlug &&
+            !['watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups', 'people', 'p', 'permalink.php'].includes(
+              mSlug[1].toLowerCase()
+            ) &&
+            !/^\d+$/.test(mSlug[1])
+          ) {
+            existingProf.profileUrl = `https://www.facebook.com/${mSlug[1]}`;
+            modified = true;
+          }
+        }
+
+        // b. Chuẩn hóa UID nếu URL có dạng /people/.../{ID}/
+        const urlId = this.extractNumericIdFromUrl(existingProf.profileUrl);
+        if (urlId && urlId !== existingProf.uid && /^\d+$/.test(urlId)) {
+          existingProf.uid = urlId;
+          modified = true;
+        }
+
+        // c. Bù đắp Avatar nếu còn thiếu hoặc file avatar bị lỗi / placeholder (< 1200 bytes)
+        const currentAvatarValid = existingProf.avatarUrl && existingProf.uid && (await this.getAvatarFilePath(existingProf.uid, this.extractSlugFromUrl(existingProf.profileUrl)));
+        if (!currentAvatarValid) {
+          const slug = this.extractSlugFromUrl(existingProf.profileUrl);
+          const candidateIds = Array.from(new Set([existingProf.uid, urlId, targetUid, slug])).filter(Boolean) as string[];
+          for (const cand of candidateIds) {
+            const avatarPath = await this.getAvatarFilePath(cand, slug);
+            if (avatarPath) {
+              existingProf.avatarUrl = `/api/profile-management/avatar/${cand}`;
+              existingProf.status = 'SUCCESS';
+              modified = true;
+              break;
+            }
+          }
+        }
+
+        if (modified) {
+          this.db.upsertProfile(existingProf);
+          this.videosGateway.emitProfileMgmtItem(existingProf);
+          this.emitLog(`✔ [TỰ ĐỘNG CẬP NHẬT] "${existingProf.name}" | URL: ${existingProf.profileUrl} | Avatar: ${existingProf.avatarUrl ? 'Có' : 'Chưa có'}`);
+        }
+
         continue;
       }
 
@@ -1009,10 +1132,14 @@ export class ProfileManagementService implements OnModuleInit {
       }
     }
 
+    this.saveToDatabase();
+    this.state.profiles = this.profiles;
+    this.state.profilesCount = this.profiles.length;
+
     const message =
       addedCount > 0
         ? `Đã quét ${videos.length} bài viết và thêm mới thành công ${addedCount} profile vào danh sách.`
-        : `Đã quét ${videos.length} bài viết. Tất cả người dùng đều đã có trong danh sách profile.`;
+        : `Đã quét ${videos.length} bài viết. Đã đồng bộ và cập nhật avatar cho toàn bộ danh sách profile.`;
 
     this.emitLog(`[QUÉT DỰA TRÊN DỮ LIỆU] ${message}`);
 

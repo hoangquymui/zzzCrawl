@@ -35,6 +35,19 @@ import {
 } from '../types/profile-management';
 import { useAuth } from '../context/AuthContext';
 
+function normalizeProfileUrl(rawUrl?: string): string {
+  if (!rawUrl) return '';
+  let s = rawUrl.trim();
+  s = s.replace(/\\+\//g, '/');
+  s = s.replace(/\\+u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+  s = s.replace(/[\/\\]u0025([0-9a-fA-F]{2})/gi, (_, hex) => '%' + hex);
+  s = s.replace(/u0025([0-9a-fA-F]{2})/gi, (_, hex) => '%' + hex);
+  if (/\/people\/[^/]+\/\d+$/i.test(s)) {
+    s += '/';
+  }
+  return s;
+}
+
 export const ProfileManagementPage: React.FC = () => {
   const { isAdmin } = useAuth();
   const navigate = useNavigate();
@@ -174,7 +187,7 @@ export const ProfileManagementPage: React.FC = () => {
 
     const urls = profileUrlsText
       .split(/[\r\n,;]+/)
-      .map((u) => u.trim())
+      .map((u) => normalizeProfileUrl(u))
       .filter((u) => u.length > 0);
 
     if (urls.length === 0) {
@@ -243,7 +256,8 @@ export const ProfileManagementPage: React.FC = () => {
 
   // Copy link helper
   const handleCopyLink = (url: string, id: string) => {
-    navigator.clipboard.writeText(url).then(() => {
+    const cleanUrl = normalizeProfileUrl(url);
+    navigator.clipboard.writeText(cleanUrl).then(() => {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
     });
@@ -268,7 +282,7 @@ export const ProfileManagementPage: React.FC = () => {
       idx + 1,
       `"${(p.name || '').replace(/"/g, '""')}"`,
       `"${(p.uid || '').replace(/"/g, '""')}"`,
-      `"${(p.profileUrl || '').replace(/"/g, '""')}"`,
+      `"${(normalizeProfileUrl(p.profileUrl) || '').replace(/"/g, '""')}"`,
       `"${p.crawledAt || ''}"`,
     ]);
 
@@ -717,7 +731,7 @@ export const ProfileManagementPage: React.FC = () => {
                       <div className="inline-flex items-center gap-1">
                         {/* Mở Facebook */}
                         <a
-                          href={p.profileUrl}
+                          href={normalizeProfileUrl(p.profileUrl)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition"
@@ -729,7 +743,7 @@ export const ProfileManagementPage: React.FC = () => {
                         {/* Copy Link */}
                         <button
                           type="button"
-                          onClick={() => handleCopyLink(p.profileUrl, p.id)}
+                          onClick={() => handleCopyLink(normalizeProfileUrl(p.profileUrl), p.id)}
                           className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition cursor-pointer"
                           title="Copy Link Profile"
                         >

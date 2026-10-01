@@ -110,11 +110,31 @@ export function detectContentType(url: string): ContentType {
 }
 
 /**
+ * Chuẩn hóa URL Facebook: giải mã các ký tự unicode escape như \u0025 hoặc /u0025 về ký tự chuẩn %
+ */
+export function normalizeFacebookUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  let s = rawUrl.trim();
+  // 1. Giải mã dấu gạch chéo bị escape: \/ -> /
+  s = s.replace(/\\+\//g, '/');
+  // 2. Giải mã các chuỗi unicode escape dạng \u0025 hoặc \\u0025
+  s = s.replace(/\\+u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+  // 3. Xử lý trường hợp chuỗi bị dính /u0025 hoặc u0025 do lỗi encode/decode trước đó
+  s = s.replace(/[\/\\]u0025([0-9a-fA-F]{2})/gi, (_, hex) => '%' + hex);
+  s = s.replace(/u0025([0-9a-fA-F]{2})/gi, (_, hex) => '%' + hex);
+  // 4. Nếu là URL dạng /people/... kết thúc bằng UID số, đảm bảo có dấu gạch chéo ở cuối
+  if (/\/people\/[^/]+\/\d+$/i.test(s)) {
+    s += '/';
+  }
+  return s;
+}
+
+/**
  * Làm sạch link: Chuẩn hóa giao thức, tên miền và cắt bỏ các tham số rác sau dấu '?'
  */
 export function sanitizeUrl(url: string): string {
   if (!url) return '';
-  let clean = url.trim();
+  let clean = normalizeFacebookUrl(url);
 
   // 1. Nếu link là wrapper redirect Facebook (l.facebook.com/l.php?u=... hoặc lm.facebook.com/l.php?u=...)
   if (clean.includes('facebook.com/l.php?') || clean.includes('/l.php?u=')) {
@@ -277,7 +297,10 @@ export function sanitizeUrl(url: string): string {
         !u.pathname.includes('profile.php') &&
         !u.pathname.includes('photo')
       ) {
-        return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+        const cleanPath = u.pathname.includes('/people/')
+          ? (u.pathname.endsWith('/') ? u.pathname : `${u.pathname}/`)
+          : u.pathname.replace(/\/+$/, '');
+        return `${u.origin}${cleanPath}`;
       }
     } catch {}
   }

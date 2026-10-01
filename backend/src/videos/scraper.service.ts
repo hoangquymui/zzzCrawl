@@ -12,6 +12,7 @@ import {
 } from './utils/text-normalizer';
 import {
   sanitizeUrl,
+  normalizeFacebookUrl,
   detectPlatform,
   detectContentType,
   isRedirectUrl,
@@ -496,7 +497,7 @@ export class ScraperService implements OnModuleDestroy {
             html.match(/"owner_as_page":\s*\{[^}]*"url":\s*"([^"]+)"/i) ||
             html.match(/"video_owner":\s*\{[^}]*"url":\s*"([^"]+)"/i);
           if (mActorUrl && mActorUrl[1]) {
-            const rawAuthorUrl = mActorUrl[1].replace(/\\\//g, '/');
+            const rawAuthorUrl = normalizeFacebookUrl(mActorUrl[1]);
             const mPeopleId = rawAuthorUrl.match(/\/people\/[^/]+\/(\d+)/i);
             if (mPeopleId) {
               finalUrl = `https://www.facebook.com/${mPeopleId[1]}/videos/${videoId}/`;
@@ -963,7 +964,7 @@ export class ScraperService implements OnModuleDestroy {
         html.match(/"actors":\s*\[\s*\{[^}]*"url":\s*"([^"]+)"/i) ||
         html.match(/"owner_as_page":\s*\{[^}]*"url":\s*"([^"]+)"/i);
       if (mActorUrl && mActorUrl[1]) {
-        result.authorUrl = mActorUrl[1].replace(/\\\//g, '/');
+        result.authorUrl = normalizeFacebookUrl(mActorUrl[1]);
       }
     }
 
@@ -983,6 +984,9 @@ export class ScraperService implements OnModuleDestroy {
           result.authorUrl = `https://www.facebook.com/${mSlug[1]}`;
         }
       }
+    }
+    if (result.authorUrl) {
+      result.authorUrl = normalizeFacebookUrl(result.authorUrl);
     }
 
     // 2e. Nếu link bài viết đang là /watch hoặc video.php, nâng cấp lên link video gốc theo tác giả
