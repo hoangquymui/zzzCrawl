@@ -31,6 +31,16 @@ export class VideosController {
     return { success: true, data };
   }
 
+  @Post('bulk-delete')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  public bulkDelete(@Body() body: { ids: (string | number)[] }): { success: boolean; count: number } {
+    if (!body?.ids || !Array.isArray(body.ids) || body.ids.length === 0) {
+      throw new BadRequestException('Danh sách ID cần xóa không hợp lệ');
+    }
+    return this.videosService.deleteVideosBulk(body.ids);
+  }
+
   @Delete(':id')
   @UseGuards(RolesGuard)
   @Roles('admin')

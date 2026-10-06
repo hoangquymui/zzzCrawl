@@ -65,3 +65,19 @@ export async function refreshAllVideos(concurrency: string = 'all'): Promise<{ s
   }
   return json;
 }
+
+export async function deleteVideosBulk(ids: (string | number)[]): Promise<{ success: boolean; deletedCount: number }> {
+  const res = await fetch('/api/videos/bulk-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ ids }),
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(json.message || json.error || 'Lỗi khi xóa hàng loạt video');
+  }
+  return json;
+}
+
+

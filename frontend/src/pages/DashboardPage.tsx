@@ -16,6 +16,7 @@ interface DashboardPageProps {
   onRefreshOne: (idOrStt: string | number) => Promise<void>;
   onRefreshAll: () => Promise<void>;
   onDelete: (idOrStt: string | number) => Promise<void>;
+  onBulkDelete?: (ids: (string | number)[]) => Promise<void>;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -27,6 +28,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   onRefreshOne,
   onRefreshAll,
   onDelete,
+  onBulkDelete,
 }) => {
   const { isAdmin } = useAuth();
 
@@ -63,6 +65,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         onRefreshOne={onRefreshOne}
         onRefreshAll={onRefreshAll}
         onDelete={onDelete}
+        onBulkDelete={onBulkDelete}
         canManage={isAdmin}
       />
     </div>

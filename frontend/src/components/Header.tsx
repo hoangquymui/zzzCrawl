@@ -1,12 +1,13 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import { Sun, Moon, Menu, LogIn, LogOut, ShieldCheck, User } from "lucide-react";
+import { Sun, Moon, Menu, LogIn, LogOut, ShieldCheck, User, Search } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
 
 interface HeaderProps {
   isConnected: boolean;
   onOpenMobileSidebar?: () => void;
+  onOpenCommandPalette?: () => void;
 }
 
 const PATH_TITLES: Record<string, string> = {
@@ -31,6 +32,7 @@ const PATH_TITLES: Record<string, string> = {
 export const Header: React.FC<HeaderProps> = ({
   isConnected,
   onOpenMobileSidebar,
+  onOpenCommandPalette,
 }) => {
   const { theme, toggleTheme } = useTheme();
   const { user, isAuthenticated, isAdmin, openLoginModal, logout } = useAuth();
@@ -64,8 +66,24 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Right: Socket Connection Status, Theme Toggle & Auth Controls */}
+        {/* Right: Quick Search, Socket Connection Status, Theme Toggle & Auth Controls */}
         <div className="flex items-center space-x-2 sm:space-x-3 text-xs">
+          {/* Nút tìm kiếm nhanh Command Palette (Ctrl + K) */}
+          {onOpenCommandPalette && (
+            <button
+              type="button"
+              onClick={onOpenCommandPalette}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-800 bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition cursor-pointer text-xs shadow-xs"
+              title="Tìm kiếm nhanh (Ctrl + K)"
+            >
+              <Search className="w-3.5 h-3.5 text-slate-400" />
+              <span className="hidden md:inline font-medium">Tìm kiếm...</span>
+              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-500 dark:text-slate-400 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded shadow-2xs">
+                Ctrl K
+              </kbd>
+            </button>
+          )}
+
           {/* Socket Connection Status */}
           <div
             className={`hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-full font-medium border transition-colors ${

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { chromium, Browser, BrowserContext } from 'playwright';
 import { DatabaseService } from '../database/database.service';
-import { VideosGateway } from './videos.gateway';
+import { VideosGateway } from '../videos/videos.gateway';
 
 export interface CookieCheckResult {
   isValid: boolean;

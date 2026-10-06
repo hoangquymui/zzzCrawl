@@ -1,4 +1,4 @@
-import { VideoItem } from '../interfaces/video.interface';
+import { VideoItem } from '../../videos/interfaces/video.interface';
 import { isValidAuthor, isBoilerplateCaption } from './text-normalizer';
 import { PlatformType, ContentType } from './url-cleaner';
 

@@ -7,9 +7,10 @@ import {
   ProfileCrawlProgress,
   ProfileManagementState,
 } from './interfaces/profile-management.interface';
-import { VideosGateway } from './videos.gateway';
-import { CookieService } from './cookie.service';
-import { normalizeFacebookUrl } from './utils/url-cleaner';
+import { VideosGateway } from '../videos/videos.gateway';
+import { VideosService } from '../videos/videos.service';
+import { CookieService } from '../cookies/cookie.service';
+import { normalizeFacebookUrl } from '../scraper/utils/url-cleaner';
 
 @Injectable()
 export class ProfileManagementService implements OnModuleInit {
@@ -19,12 +20,6 @@ export class ProfileManagementService implements OnModuleInit {
 
   private readonly cookieFilePath = path.join(process.cwd(), 'backend', 'cookies.json');
   private readonly fallbackCookiePath = path.join(process.cwd(), 'cookies.json');
-  private readonly testUserCookiePath = path.join(
-    process.cwd(),
-    '..',
-    'test_video_from_user',
-    'cookies.json'
-  );
 
   private profiles: UserProfileItem[] = [];
   private state: ProfileManagementState = {
@@ -42,9 +37,24 @@ export class ProfileManagementService implements OnModuleInit {
     private readonly db: DatabaseService,
     @Inject(forwardRef(() => VideosGateway))
     private readonly videosGateway: VideosGateway,
-    private readonly cookieService: CookieService
+    @Inject(forwardRef(() => CookieService))
+    private readonly cookieService: CookieService,
+    @Inject(forwardRef(() => VideosService))
+    private readonly videosService: VideosService
   ) {
     this.loadFromDatabase();
+  }
+
+  public notifyVideosUpdated(): void {
+    try {
+      this.db.syncVideoAuthorsWithProfiles();
+      if (this.videosService) {
+        this.videosService.reloadVideos();
+        this.videosGateway.emitVideosUpdated(this.videosService.getVideos());
+      }
+    } catch (err: any) {
+      this.logger.warn(`Lỗi thông báo cập nhật videos: ${err?.message}`);
+    }
   }
 
   public onModuleInit(): void {
@@ -341,6 +351,8 @@ export class ProfileManagementService implements OnModuleInit {
       this.state.profiles = this.profiles;
       this.state.profilesCount = this.profiles.length;
       this.emitLog(`[XÓA] Đã xóa profile ID: ${id}`);
+      this.videosGateway.emitProfileMgmtStatus('IDLE');
+      this.notifyVideosUpdated();
       return true;
     }
     return false;
@@ -353,6 +365,8 @@ export class ProfileManagementService implements OnModuleInit {
     this.state.profiles = [];
     this.state.profilesCount = 0;
     this.emitLog(`[XÓA TẤT CẢ] Đã làm trống danh sách profile.`);
+    this.videosGateway.emitProfileMgmtStatus('IDLE');
+    this.notifyVideosUpdated();
     return true;
   }
 
@@ -796,6 +810,7 @@ export class ProfileManagementService implements OnModuleInit {
         this.emitLog(`========================================`);
         this.emitLog(`Hoàn thành quét: ${successCount} thành công, ${skippedCount} link không hợp lệ bị bỏ qua.`);
         this.emitLog(`========================================`);
+        this.notifyVideosUpdated();
         this.state.status = 'DONE';
         this.videosGateway.emitProfileMgmtStatus('DONE');
         this.emitProgress({
@@ -988,6 +1003,7 @@ export class ProfileManagementService implements OnModuleInit {
     this.state.profilesCount = this.profiles.length;
 
     this.videosGateway.emitProfileMgmtItem(newProfile);
+    this.notifyVideosUpdated();
     this.emitLog(`✔ [TỰ ĐỘNG THÊM PROFILE] Đã tự động thêm người đăng: "${newProfile.name}" (UID: ${newProfile.uid || 'Chưa rõ'}) vào cơ sở dữ liệu.`);
 
     return newProfile;
@@ -1141,6 +1157,7 @@ export class ProfileManagementService implements OnModuleInit {
         ? `Đã quét ${videos.length} bài viết và thêm mới thành công ${addedCount} profile vào danh sách.`
         : `Đã quét ${videos.length} bài viết. Đã đồng bộ và cập nhật avatar cho toàn bộ danh sách profile.`;
 
+    this.notifyVideosUpdated();
     this.emitLog(`[QUÉT DỰA TRÊN DỮ LIỆU] ${message}`);
 
     return {

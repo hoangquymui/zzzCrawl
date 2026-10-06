@@ -4,9 +4,14 @@ import { ServeStaticModule } from '@nestjs/serve-static';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseModule } from './database/database.module';
+import { CookieModule } from './cookies/cookie.module';
+import { VocabularyModule } from './vocabulary/vocabulary.module';
+import { ScraperModule } from './scraper/scraper.module';
+import { ProfilesModule } from './profiles/profiles.module';
 import { VideosModule } from './videos/videos.module';
 import { AuthModule } from './auth/auth.module';
 import { SettingsModule } from './settings/settings.module';
+import { AuditModule } from './audit/audit.module';
 
 const getPublicPath = () => {
   const p1 = path.join(process.cwd(), 'public');
@@ -33,9 +38,14 @@ const getPublicPath = () => {
         },
       },
     }),
-    AuthModule,
+    CookieModule,
+    VocabularyModule,
+    ScraperModule,
+    ProfilesModule,
     VideosModule,
+    AuthModule,
     SettingsModule,
+    AuditModule,
   ],
 })
 export class AppModule {}

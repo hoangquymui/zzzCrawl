@@ -20,12 +20,21 @@ export interface VideoItem {
   originalPostUrl?: string;
   isViolation?: boolean;
   violationReason?: string;
+  violationKeywords?: string[];
 }
 
 export interface DailyStat {
   date: string;
   count: number;
   cumulative: number;
+  views?: number;
+  cumulativeViews?: number;
+  likes?: number;
+  cumulativeLikes?: number;
+  comments?: number;
+  cumulativeComments?: number;
+  shares?: number;
+  cumulativeShares?: number;
 }
 
 export interface CrawlStatus {

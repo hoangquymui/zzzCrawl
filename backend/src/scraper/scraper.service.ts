@@ -1,7 +1,7 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { chromium, Browser } from 'playwright';
-import { VideoItem } from './interfaces/video.interface';
-import { CookieService } from './cookie.service';
+import { VideoItem } from '../videos/interfaces/video.interface';
+import { CookieService } from '../cookies/cookie.service';
 import { parseNumber, parseNumberDetailed, ParsedNumberDetail } from './utils/number-parser';
 import {
   decodeHtmlEntities,
@@ -28,7 +28,10 @@ export class ScraperService implements OnModuleDestroy {
   private readonly logger = new Logger(ScraperService.name);
   private browserInstance: Browser | null = null;
 
-  constructor(private readonly cookieService: CookieService) {}
+  constructor(
+    @Inject(forwardRef(() => CookieService))
+    private readonly cookieService: CookieService
+  ) {}
 
   public async onModuleDestroy(): Promise<void> {
     if (this.browserInstance) {
@@ -1354,10 +1357,21 @@ export class ScraperService implements OnModuleDestroy {
   }
 
   private async getBrowser(): Promise<Browser> {
-    if (!this.browserInstance) {
+    if (!this.browserInstance || !this.browserInstance.isConnected()) {
+      try {
+        if (this.browserInstance) {
+          await this.browserInstance.close().catch(() => {});
+        }
+      } catch {}
+
       this.browserInstance = await chromium.launch({
         headless: true,
         args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+      });
+
+      this.browserInstance.on('disconnected', () => {
+        this.logger.warn('[Playwright] Chromium browser đã bị ngắt kết nối (crash hoặc bị đóng). Sẽ tự động tái tạo phiên mới ở lần gọi tiếp theo.');
+        this.browserInstance = null;
       });
     }
     return this.browserInstance;
@@ -1371,13 +1385,23 @@ export class ScraperService implements OnModuleDestroy {
     this.assertSupportedUrl(cleanUrl);
     const isTikTok = isTikTokUrl(cleanUrl);
 
-    const browser = await this.getBrowser();
-    const context = await browser.newContext({
+    let browser = await this.getBrowser();
+    let context: any;
+    const contextOptions = {
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 800 },
       locale: 'vi-VN',
-    });
+    };
+
+    try {
+      context = await browser.newContext(contextOptions);
+    } catch (ctxErr: any) {
+      this.logger.warn(`[Playwright] Lỗi tạo context (${ctxErr?.message}). Đang tái khởi động Chromium mới...`);
+      this.browserInstance = null;
+      browser = await this.getBrowser();
+      context = await browser.newContext(contextOptions);
+    }
 
     // Nạp Cookie Facebook vào context nếu có
     if (!isTikTok && this.cookieService) {

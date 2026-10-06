@@ -18,11 +18,13 @@ import {
   FileText,
   Layers,
   Check,
+  X,
 } from "lucide-react";
 import { BatchProgress, VideoItem } from "../types/video";
 import { formatNumber } from "../utils/formatters";
 import { exportVideosToExcel } from "../utils/exportExcel";
 import { exportVideosToCSV } from "../utils/exportCsv";
+import { deleteVideosBulk } from "../services/api";
 import { FacebookIcon, TikTokIcon } from "./Icons";
 import { DateRangePicker } from "./DateRangePicker";
 import { useResizableColumns } from "../hooks/useResizableColumns";
@@ -36,6 +38,7 @@ interface VideoTableProps {
   onRefreshOne: (idOrStt: string | number) => Promise<void>;
   onRefreshAll: () => Promise<void>;
   onDelete: (idOrStt: string | number) => Promise<void>;
+  onBulkDelete?: (ids: (string | number)[]) => Promise<void>;
   canManage?: boolean;
 }
 
@@ -46,6 +49,7 @@ export const VideoTable: React.FC<VideoTableProps> = ({
   onRefreshOne,
   onRefreshAll,
   onDelete,
+  onBulkDelete,
   canManage = true,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
@@ -105,6 +109,7 @@ export const VideoTable: React.FC<VideoTableProps> = ({
   // Kéo giãn độ rộng các cột của bảng
   const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
     {
+      select: 38,
       stt: 55,
       nguoiDang: 150,
       caption: 260,
@@ -230,6 +235,104 @@ export const VideoTable: React.FC<VideoTableProps> = ({
       }
     }
   };
+
+  // Trạng thái chọn nhiều dòng (Bulk Actions)
+  const [selectedIds, setSelectedIds] = useState<Set<string | number>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isBulkRefreshing, setIsBulkRefreshing] = useState(false);
+
+  const getVideoKey = (v: VideoItem, fallbackIdx: number): string | number => {
+    return v.id || (v.STT !== undefined ? v.STT : fallbackIdx);
+  };
+
+  const toggleSelectRow = (id: string | number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const areAllPageSelected = useMemo(() => {
+    if (paginatedVideos.length === 0) return false;
+    return paginatedVideos.every((v, i) => selectedIds.has(getVideoKey(v, i)));
+  }, [paginatedVideos, selectedIds]);
+
+  const isSomePageSelected = useMemo(() => {
+    return paginatedVideos.some((v, i) => selectedIds.has(getVideoKey(v, i)));
+  }, [paginatedVideos, selectedIds]);
+
+  const toggleSelectAllPage = () => {
+    if (areAllPageSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        paginatedVideos.forEach((v, i) => next.delete(getVideoKey(v, i)));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        paginatedVideos.forEach((v, i) => next.add(getVideoKey(v, i)));
+        return next;
+      });
+    }
+  };
+
+  const selectAllFiltered = () => {
+    setSelectedIds(new Set(filteredVideos.map((v, i) => getVideoKey(v, i))));
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  const selectedVideosList = useMemo(() => {
+    return videos.filter((v, i) => selectedIds.has(getVideoKey(v, i)));
+  }, [videos, selectedIds]);
+
+  const handleBulkDeleteAction = async () => {
+    if (selectedIds.size === 0) return;
+    if (
+      !window.confirm(
+        `Bạn có chắc chắn muốn xóa ${selectedIds.size} bài viết đã chọn khỏi danh sách theo dõi?`
+      )
+    ) {
+      return;
+    }
+    setIsBulkDeleting(true);
+    try {
+      const idsArray = Array.from(selectedIds);
+      if (onBulkDelete) {
+        await onBulkDelete(idsArray);
+      } else {
+        await deleteVideosBulk(idsArray).catch(async () => {
+          for (const id of idsArray) {
+            await onDelete(id).catch(() => {});
+          }
+        });
+      }
+      clearSelection();
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const handleBulkRefreshAction = async () => {
+    if (selectedIds.size === 0) return;
+    setIsBulkRefreshing(true);
+    try {
+      for (const id of Array.from(selectedIds)) {
+        await onRefreshOne(id).catch(() => {});
+      }
+    } finally {
+      setIsBulkRefreshing(false);
+    }
+  };
+
 
   // Tạo mảng số trang hiển thị
   const pageNumbers = useMemo(() => {
@@ -568,6 +671,24 @@ export const VideoTable: React.FC<VideoTableProps> = ({
         <table className="w-full text-xs text-left border-collapse">
           <thead>
             <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/70 text-slate-600 dark:text-slate-400 uppercase font-semibold tracking-wider text-[11px] select-none">
+              {/* 0. Checkbox chọn hàng loạt */}
+              {canManage && (
+                <th style={{ width: colWidths.select, minWidth: colWidths.select }} className="relative px-2 py-3 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={areAllPageSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = !areAllPageSelected && isSomePageSelected;
+                      }}
+                      onChange={toggleSelectAllPage}
+                      className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                      title={areAllPageSelected ? "Bỏ chọn trang này" : "Chọn tất cả trên trang"}
+                    />
+                  </div>
+                  <ResizeHandle onMouseDown={(e) => handleColResize('select', e)} />
+                </th>
+              )}
               {/* 1. STT */}
               <th style={{ width: colWidths.stt, minWidth: colWidths.stt }} className="relative px-2 py-3 text-center shrink-0 border-r border-slate-200 dark:border-slate-800">
                 STT
@@ -625,7 +746,8 @@ export const VideoTable: React.FC<VideoTableProps> = ({
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800/80">
             {paginatedVideos.map((v, idx) => {
               const autoStt = (safePage - 1) * pageSize + idx + 1;
-              const rowId = v.id || (v.STT !== undefined ? v.STT : autoStt);
+              const rowId = getVideoKey(v, autoStt);
+              const isSelected = selectedIds.has(rowId);
               const isFB = (v.loai || "").includes("Facebook");
               const isUpdated = updatedRowStt === rowId || (v.STT !== undefined && updatedRowStt === v.STT);
               const isRefreshing = refreshingId === rowId;
@@ -635,9 +757,24 @@ export const VideoTable: React.FC<VideoTableProps> = ({
                 <tr
                   key={rowId}
                   className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition duration-150 ${
-                    isUpdated ? "animate-row-pulse" : ""
-                  }`}
+                    isSelected ? "bg-blue-50/70 dark:bg-blue-950/30" : ""
+                  } ${isUpdated ? "animate-row-pulse" : ""}`}
                 >
+                  {/* 0. Checkbox chọn dòng */}
+                  {canManage && (
+                    <td style={{ width: colWidths.select }} className="py-2.5 px-2 text-center border-r border-slate-100 dark:border-slate-800/60">
+                      <div className="flex items-center justify-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectRow(rowId)}
+                          className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer accent-blue-600"
+                          title="Chọn dòng này để thao tác hàng loạt"
+                        />
+                      </div>
+                    </td>
+                  )}
+
                   {/* 1. STT: Tự động đánh số theo vị trí hiển thị, không phụ thuộc vào dữ liệu */}
                   <td style={{ width: colWidths.stt }} className="py-2.5 px-2 text-center font-bold text-slate-700 dark:text-slate-300 border-r border-slate-100 dark:border-slate-800/60 font-mono">
                     {autoStt}
@@ -907,6 +1044,85 @@ export const VideoTable: React.FC<VideoTableProps> = ({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Floating Bulk Actions Bar (Thanh tác vụ hàng loạt nổi) */}
+      {selectedIds.size > 0 && canManage && (
+        <div className="sticky bottom-3 z-30 mx-4 my-2 px-4 py-3 bg-slate-900/95 dark:bg-slate-800/95 backdrop-blur-md text-white rounded-2xl shadow-2xl border border-slate-700/80 flex flex-wrap items-center justify-between gap-3 animate-in slide-in-from-bottom-3 duration-200">
+          <div className="flex items-center gap-3 text-xs">
+            <span className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-600/30 text-blue-300 font-semibold border border-blue-500/40">
+              <Check className="w-3.5 h-3.5" />
+              Đã chọn {selectedIds.size} bài viết
+            </span>
+            {selectedIds.size < filteredVideos.length && (
+              <button
+                type="button"
+                onClick={selectAllFiltered}
+                className="text-xs text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer transition"
+              >
+                Chọn tất cả {filteredVideos.length} bài trong bộ lọc
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Làm mới hàng loạt */}
+            <button
+              type="button"
+              onClick={handleBulkRefreshAction}
+              disabled={isBulkRefreshing || isBulkDeleting}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition cursor-pointer disabled:opacity-50"
+              title="Cập nhật số liệu các bài viết đã chọn"
+            >
+              <RotateCw className={`w-3.5 h-3.5 ${isBulkRefreshing ? "animate-spin text-blue-400" : ""}`} />
+              <span>{isBulkRefreshing ? "Đang cập nhật..." : "Làm mới đã chọn"}</span>
+            </button>
+
+            {/* Xuất Excel đã chọn */}
+            <button
+              type="button"
+              onClick={() => exportVideosToExcel(selectedVideosList, "danh_sach_video_da_chon")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 transition cursor-pointer"
+              title="Xuất các bài đã chọn ra Excel (.xlsx)"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Xuất Excel ({selectedIds.size})</span>
+            </button>
+
+            {/* Xuất CSV đã chọn */}
+            <button
+              type="button"
+              onClick={() => exportVideosToCSV(selectedVideosList, "danh_sach_video_da_chon")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 transition cursor-pointer"
+              title="Xuất các bài đã chọn ra CSV"
+            >
+              <FileText className="w-3.5 h-3.5 text-blue-400" />
+              <span>Xuất CSV ({selectedIds.size})</span>
+            </button>
+
+            {/* Xóa hàng loạt */}
+            <button
+              type="button"
+              onClick={handleBulkDeleteAction}
+              disabled={isBulkDeleting || isBulkRefreshing}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-rose-600/25 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 transition cursor-pointer disabled:opacity-50"
+              title="Xóa vĩnh viễn các bài đã chọn khỏi hệ thống"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>{isBulkDeleting ? "Đang xóa..." : "Xóa đã chọn"}</span>
+            </button>
+
+            {/* Bỏ chọn */}
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-700/60 transition cursor-pointer ml-1"
+              title="Bỏ chọn tất cả"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
 

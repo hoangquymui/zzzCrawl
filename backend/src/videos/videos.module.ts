@@ -1,43 +1,24 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { VideosController } from './videos.controller';
 import { VideosService } from './videos.service';
 import { StorageService } from './storage.service';
-import { ScraperService } from './scraper.service';
 import { VideosGateway } from './videos.gateway';
-import { ProfileScannerController } from './profile-scanner.controller';
-import { ProfileScannerService } from './profile-scanner.service';
-import { ProfileManagementController } from './profile-management.controller';
-import { ProfileManagementService } from './profile-management.service';
-import { CookieController } from './cookie.controller';
-import { CookieService } from './cookie.service';
-import { VocabularyController } from './vocabulary.controller';
-import { VocabularyService } from './vocabulary.service';
+import { DatabaseModule } from '../database/database.module';
+import { ScraperModule } from '../scraper/scraper.module';
+import { CookieModule } from '../cookies/cookie.module';
+import { ProfilesModule } from '../profiles/profiles.module';
+import { VocabularyModule } from '../vocabulary/vocabulary.module';
 
 @Module({
-  controllers: [
-    VideosController,
-    ProfileScannerController,
-    ProfileManagementController,
-    CookieController,
-    VocabularyController,
+  imports: [
+    DatabaseModule,
+    forwardRef(() => ScraperModule),
+    forwardRef(() => CookieModule),
+    forwardRef(() => ProfilesModule),
+    forwardRef(() => VocabularyModule),
   ],
-  providers: [
-    VideosService,
-    StorageService,
-    ScraperService,
-    VideosGateway,
-    ProfileScannerService,
-    ProfileManagementService,
-    CookieService,
-    VocabularyService,
-  ],
-  exports: [
-    VideosService,
-    VideosGateway,
-    ProfileScannerService,
-    ProfileManagementService,
-    CookieService,
-    VocabularyService,
-  ],
+  controllers: [VideosController],
+  providers: [VideosService, StorageService, VideosGateway],
+  exports: [VideosService, StorageService, VideosGateway],
 })
 export class VideosModule {}

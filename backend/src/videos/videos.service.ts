@@ -10,12 +10,12 @@ import {
 } from '@nestjs/common';
 import { VideoItem } from './interfaces/video.interface';
 import { StorageService } from './storage.service';
-import { ScraperService } from './scraper.service';
+import { ScraperService } from '../scraper/scraper.service';
 import { VideosGateway } from './videos.gateway';
 import { DatabaseService } from '../database/database.service';
-import { CookieService } from './cookie.service';
-import { checkCaptionViolation } from './utils/profanity-checker';
-import { ProfileManagementService } from './profile-management.service';
+import { CookieService } from '../cookies/cookie.service';
+import { checkCaptionViolation } from '../vocabulary/utils/profanity-checker';
+import { ProfileManagementService } from '../profiles/profile-management.service';
 
 @Injectable()
 export class VideosService implements OnModuleInit, OnModuleDestroy {
@@ -30,10 +30,12 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly storageService: StorageService,
+    @Inject(forwardRef(() => ScraperService))
     private readonly scraperService: ScraperService,
     @Inject(forwardRef(() => VideosGateway))
     private readonly videosGateway: VideosGateway,
     private readonly db: DatabaseService,
+    @Inject(forwardRef(() => CookieService))
     private readonly cookieService: CookieService,
     @Inject(forwardRef(() => ProfileManagementService))
     private readonly profileManagementService: ProfileManagementService
@@ -338,7 +340,26 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
     this.trackedVideos = this.trackedVideos.filter((v) => v !== target);
     this.storageService.saveVideos(this.trackedVideos);
     this.videosGateway.emitVideoDeleted(target.id || target.STT || 0);
+
     return true;
+  }
+
+  public deleteVideosBulk(ids: (string | number)[]): { success: boolean; count: number } {
+    if (!ids || ids.length === 0) return { success: true, count: 0 };
+    const idSet = new Set(ids.map((id) => String(id)));
+    const toDelete = this.trackedVideos.filter(
+      (v) => (v.id && idSet.has(String(v.id))) || (v.STT !== undefined && idSet.has(String(v.STT)))
+    );
+
+    if (toDelete.length === 0) return { success: true, count: 0 };
+
+    this.trackedVideos = this.trackedVideos.filter(
+      (v) => !((v.id && idSet.has(String(v.id))) || (v.STT !== undefined && idSet.has(String(v.STT))))
+    );
+    this.storageService.saveVideos(this.trackedVideos);
+    this.videosGateway.emitVideosUpdated(this.trackedVideos);
+
+    return { success: true, count: toDelete.length };
   }
 
   public async refreshAllVideosBatch(
@@ -371,11 +392,12 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
 
     const total = this.trackedVideos.length;
 
-    let concurrency = Math.min(total, this.maxSafeConcurrency);
+    const hardCap = this.maxSafeConcurrency || 5;
+    let concurrency = Math.min(total, hardCap);
     const effectiveConcurrency =
       customConcurrency === 'default'
         ? this.concurrencyMode === 'max'
-          ? 'all'
+          ? hardCap
           : this.concurrencyCount
         : customConcurrency;
 
@@ -384,11 +406,13 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       effectiveConcurrency !== 'max' &&
       Number(effectiveConcurrency) > 0
     ) {
-      concurrency = Math.min(total, this.maxSafeConcurrency, parseInt(String(effectiveConcurrency), 10));
+      concurrency = Math.min(total, hardCap, Math.max(1, parseInt(String(effectiveConcurrency), 10)));
+    } else {
+      concurrency = Math.min(total, hardCap);
     }
 
     this.logger.log(
-      `[${source}] Bắt đầu làm mới đồng loạt ${total} video với ${concurrency} luồng song song...`
+      `[${source}] Bắt đầu làm mới đồng loạt ${total} video với ${concurrency} luồng song song (giới hạn an toàn tối đa ${hardCap})...`
     );
     this.videosGateway.emitRefreshAllStarted(total, concurrency);
 
@@ -432,7 +456,8 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
         );
         if (idx !== -1) {
           this.trackedVideos[idx] = mergedVideo;
-          this.storageService.saveVideos(this.trackedVideos);
+          // TỐI ƯU HIỆU NĂNG: Chỉ upsert đúng 1 bản ghi hiện tại vào SQLite (triệt tiêu Write Amplification 50x)
+          this.storageService.upsertVideo(mergedVideo);
           this.videosGateway.emitVideoUpdated(mergedVideo);
         }
       } catch (err: unknown) {
@@ -457,6 +482,10 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await Promise.all(workers);
+      // Sau khi toàn bộ các luồng cào hoàn tất, đồng bộ file backup JSON một lần duy nhất
+      try {
+        this.storageService.saveVideos(this.trackedVideos);
+      } catch {}
     } finally {
       this.isRefreshingAll = false;
       this.videosGateway.emitRefreshAllCompleted(total);

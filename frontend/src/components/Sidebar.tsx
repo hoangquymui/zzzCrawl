@@ -43,7 +43,7 @@ const HOME_ITEMS: NavItem[] = [
 ];
 
 const DOCUMENT_ITEMS: NavItem[] = [
-  { key: 'link', label: 'Dữ liệu', path: '/link', icon: Link2 },
+  { key: 'link', label: 'Kho bài viết', path: '/link', icon: Link2 },
   { key: 'video_profile', label: 'Thu thập dữ liệu', path: '/video-profile', icon: Video },
   { key: 'profile_management', label: 'Trang cá nhân', path: '/profile-management', icon: UserCheck },
   { key: 'reports', label: 'Báo cáo', path: '/reports', icon: FileText },
@@ -53,6 +53,7 @@ const ADMIN_ITEMS: NavItem[] = [
   { key: 'users', label: 'Tài khoản', path: '/users', icon: Users, adminOnly: true },
   { key: 'vocabulary', label: 'Từ ngữ', path: '/vocabulary', icon: ShieldAlert, adminOnly: true },
   { key: 'cookie', label: 'Cookie', path: '/cookie', icon: ShieldCheck, adminOnly: true },
+  { key: 'audit_logs', label: 'Nhật ký hoạt động', path: '/audit-logs', icon: Activity, adminOnly: true },
 ];
 
 const BOTTOM_ITEMS: NavItem[] = [
@@ -84,6 +85,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     if (path === '/vocabulary') {
       return location.pathname === '/vocabulary' || location.pathname === '/quan-ly-tu-vung';
+    }
+    if (path === '/audit-logs') {
+      return location.pathname === '/audit-logs' || location.pathname === '/audit' || location.pathname === '/nhat-ky';
     }
     return location.pathname === path || location.pathname.startsWith(`${path}/`);
   };

@@ -5,6 +5,7 @@ import {
   addVideo,
   refreshVideo,
   deleteVideo,
+  deleteVideosBulk,
   refreshAllVideos,
 } from '../services/api';
 import { BatchProgress, ToastItem, VideoItem } from '../types/video';
@@ -220,6 +221,28 @@ export function useVideoTracker() {
     }
   };
 
+  const handleBulkDelete = async (ids: (string | number)[]): Promise<void> => {
+    if (!ids || ids.length === 0) return;
+    try {
+      setCrawlStatus(`Đang xóa hàng loạt ${ids.length} bài viết...`);
+      const res = await deleteVideosBulk(ids);
+      // Cập nhật lại danh sách video local
+      setVideos((prev) =>
+        prev.filter((v) => {
+          const vId = v.id || v.STT;
+          return !ids.includes(vId as any) && (v.STT === undefined || !ids.includes(v.STT)) && (v.id === undefined || !ids.includes(v.id));
+        })
+      );
+      addToast(`Đã xóa thành công ${res.deletedCount || ids.length} bài viết!`, 'success');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi khi xóa hàng loạt video';
+      addToast(message, 'error');
+    } finally {
+      setCrawlStatus(null);
+    }
+  };
+
+
   const handleExportCSV = (): void => {
     const success = exportVideosToCSV(videos);
     if (!success) {
@@ -250,6 +273,7 @@ export function useVideoTracker() {
     handleRefreshOne,
     handleRefreshAll,
     handleDelete,
+    handleBulkDelete,
     handleExportCSV,
     handleExportExcel,
   };

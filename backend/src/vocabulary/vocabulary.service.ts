@@ -1,8 +1,8 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { VideosService } from './videos.service';
-import { StorageService } from './storage.service';
-import { VideosGateway } from './videos.gateway';
+import { VideosService } from '../videos/videos.service';
+import { StorageService } from '../videos/storage.service';
+import { VideosGateway } from '../videos/videos.gateway';
 import {
   ViolationRule,
   ViolationResult,
@@ -33,8 +33,11 @@ export class VocabularyService {
 
   constructor(
     private readonly db: DatabaseService,
+    @Inject(forwardRef(() => VideosService))
     private readonly videosService: VideosService,
+    @Inject(forwardRef(() => StorageService))
     private readonly storageService: StorageService,
+    @Inject(forwardRef(() => VideosGateway))
     private readonly videosGateway: VideosGateway
   ) {}
 

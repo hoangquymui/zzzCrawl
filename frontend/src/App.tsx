@@ -1,11 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { Toast } from './components/Toast';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginModal } from './components/LoginModal';
+import { CommandPalette } from './components/CommandPalette';
 import { useVideoTracker } from './hooks/useVideoTracker';
+import { profileManagementApi } from './services/profile-management.service';
+import { UserProfileItem } from './types/profile-management';
+import { socket } from './services/socket';
 
 // Pages cho từng route
 import { DashboardPage } from './pages/DashboardPage';
@@ -20,6 +24,7 @@ import { ProfileManagementPage } from './pages/ProfileManagementPage';
 import { CookiePage } from './pages/CookiePage';
 import { PostManagementPage } from './pages/PostManagementPage';
 import { VocabularyPage } from './pages/VocabularyPage';
+import { AuditLogPage } from './pages/AuditLogPage';
 
 export const App: React.FC = () => {
   const {
@@ -34,12 +39,52 @@ export const App: React.FC = () => {
     handleRefreshOne,
     handleRefreshAll,
     handleDelete,
+    handleBulkDelete,
   } = useVideoTracker();
 
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [profiles, setProfiles] = useState<UserProfileItem[]>([]);
+
+  // Tải danh sách profiles cho Command Palette
+  useEffect(() => {
+    profileManagementApi.getState().then((s) => setProfiles(s.profiles || [])).catch(() => {});
+
+    const refreshProfiles = () => {
+      profileManagementApi.getState().then((s) => setProfiles(s.profiles || [])).catch(() => {});
+    };
+
+    socket.on('profile_mgmt_item', refreshProfiles);
+    socket.on('profile_mgmt_status', refreshProfiles);
+
+    return () => {
+      socket.off('profile_mgmt_item', refreshProfiles);
+      socket.off('profile_mgmt_status', refreshProfiles);
+    };
+  }, []);
+
+  // Lắng nghe phím tắt toàn cục Ctrl + K
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex font-sans selection:bg-blue-600 selection:text-white transition-colors duration-200">
+      {/* Modal tìm kiếm toàn cục Command Palette (Ctrl + K) */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        videos={videos}
+        profiles={profiles}
+      />
+
       {/* Left Sidebar (Mẫu giao diện Acme Inc. / shadcn dashboard giữ nguyên tông màu chủ đạo) */}
       <Sidebar
         isMobileOpen={isMobileSidebarOpen}
@@ -52,6 +97,7 @@ export const App: React.FC = () => {
         <Header
           isConnected={isConnected}
           onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
+          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
         />
 
         {/* Main Routed Page Content */}
@@ -71,6 +117,7 @@ export const App: React.FC = () => {
                     onRefreshOne={handleRefreshOne}
                     onRefreshAll={handleRefreshAll}
                     onDelete={handleDelete}
+                    onBulkDelete={handleBulkDelete}
                   />
                 </ProtectedRoute>
               }
@@ -111,6 +158,7 @@ export const App: React.FC = () => {
                     onRefreshOne={handleRefreshOne}
                     onRefreshAll={handleRefreshAll}
                     onDelete={handleDelete}
+                    onBulkDelete={handleBulkDelete}
                   />
                 </ProtectedRoute>
               }
@@ -180,6 +228,19 @@ export const App: React.FC = () => {
               }
             />
             <Route path="/quan-ly-tu-vung" element={<Navigate to="/vocabulary" replace />} />
+
+            {/* 7c. Audit Logs (Nhật ký hoạt động hệ thống - Yêu cầu quyền Admin) */}
+            <Route
+              path="/audit-logs"
+              element={
+                <ProtectedRoute requiredRole="admin">
+                  <AuditLogPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/audit" element={<Navigate to="/audit-logs" replace />} />
+            <Route path="/nhat-ky" element={<Navigate to="/audit-logs" replace />} />
+
 
             {/* 8. Reports (Báo cáo & Tải file - Yêu cầu đăng nhập) */}
             <Route

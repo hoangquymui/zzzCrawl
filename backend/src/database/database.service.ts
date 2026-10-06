@@ -3,9 +3,9 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import { VideoItem } from '../videos/interfaces/video.interface';
-import { UserProfileItem } from '../videos/interfaces/profile-management.interface';
+import { UserProfileItem } from '../profiles/interfaces/profile-management.interface';
 import { UserPayload } from '../auth/auth.service';
-import { normalizeFacebookUrl } from '../videos/utils/url-cleaner';
+import { normalizeFacebookUrl } from '../scraper/utils/url-cleaner';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const BetterSqlite3 = require('better-sqlite3');
@@ -55,6 +55,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.initTables();
     this.cleanCorruptedUrls();
     this.migrateFromLegacyJson();
+    this.syncVideoAuthorsWithProfiles();
   }
 
   public ensureInitialized(): void {
@@ -190,6 +191,22 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         value TEXT,
         updatedAt TEXT
       );
+    `);
+
+    // 5. Bảng audit_logs (Nhật ký hoạt động tác chiến của người dùng & hệ thống)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        username TEXT NOT NULL,
+        action TEXT NOT NULL,
+        details TEXT,
+        targetId TEXT,
+        ipAddress TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_username ON audit_logs(username);
     `);
   }
 
@@ -617,6 +634,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       status: p.status || 'SUCCESS',
       errorMsg: p.errorMsg || null,
     });
+    this.syncVideoAuthorsWithProfiles();
   }
 
   public saveAllProfiles(profiles: UserProfileItem[]): void {
@@ -680,11 +698,148 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     });
 
     transaction(profiles);
+    this.syncVideoAuthorsWithProfiles();
   }
 
   public deleteProfile(id: string): boolean {
     const result = this.db.prepare('DELETE FROM profiles WHERE id = ?').run(id);
     return result.changes > 0;
+  }
+
+  /**
+   * Chuẩn hóa tên tác giả/profile để đối chiếu so khớp
+   */
+  public normalizeAuthorName(name?: string): string {
+    if (!name) return '';
+    let s = name.normalize('NFC').toLowerCase().trim();
+    s = s.replace(/\s*\|.*$/, '').trim();
+    s = s.replace(/\s*-\s*(thành phố|tỉnh|tp\.?|huyện|thị xã|tt\.?|xã|quận).*$/i, '').trim();
+    s = s.replace(/\s+(on|trên)\s+reels.*$/i, '').trim();
+    s = s.replace(/\bantt\b/g, 'an ninh trật tự');
+    s = s.replace(/\bca\b/g, 'công an');
+    s = s.replace(/[,.:\-–—_]/g, ' ');
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  public getDistinctiveTokens(norm: string): string[] {
+    const common = new Set([
+      'công', 'an', 'ninh', 'trật', 'tự',
+      'phường', 'xã', 'thị', 'trấn', 'quận', 'huyện', 'thành', 'phố', 'tỉnh', 'tp',
+      'đội', 'phòng', 'ban', 'chi'
+    ]);
+    return norm.split(' ').filter((w) => w && !common.has(w));
+  }
+
+  public extractSlugForMatching(rawUrl?: string): string {
+    if (!rawUrl) return '';
+    try {
+      const u = new URL(rawUrl);
+      if (u.hostname.includes('tiktok.com')) {
+        const m = u.pathname.match(/@([^/?#]+)/);
+        return m ? m[1].toLowerCase() : '';
+      }
+      const mPeople = u.pathname.match(/\/people\/[^/]+\/(\d+)/i);
+      if (mPeople) return mPeople[1];
+      const mP = u.pathname.match(/\/p\/[^-]+-(\d+)/i);
+      if (mP) return mP[1];
+      const idParam = u.searchParams.get('id');
+      if (idParam && /^\d+$/.test(idParam)) return idParam;
+
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (parts.length > 0) {
+        const first = parts[0].toLowerCase();
+        if (!['people', 'p', 'profile.php', 'watch', 'reel', 'reels', 'videos', 'story', 'share', 'groups'].includes(first)) {
+          return first;
+        }
+      }
+    } catch {}
+    return '';
+  }
+
+  public isPostMatchingProfile(post: VideoItem, profile: UserProfileItem): boolean {
+    const isPostTikTok = (post.link || '').includes('tiktok.com');
+    const isProfileTikTok = (profile.profileUrl || '').includes('tiktok.com');
+    if (isPostTikTok !== isProfileTikTok) return false;
+
+    if (profile.uid) {
+      if (post.authorUid && String(post.authorUid).trim() === String(profile.uid).trim()) return true;
+      if (post.authorUrl && post.authorUrl.includes(profile.uid)) return true;
+      if (post.link && post.link.includes(profile.uid)) return true;
+    }
+
+    if (profile.profileUrl && post.authorUrl) {
+      const cleanProfileUrl = profile.profileUrl.replace(/\/+$/, '').toLowerCase();
+      const cleanAuthorUrl = post.authorUrl.replace(/\/+$/, '').toLowerCase();
+      if (cleanProfileUrl === cleanAuthorUrl) return true;
+    }
+
+    const pSlug = this.extractSlugForMatching(profile.profileUrl);
+    if (pSlug) {
+      const aSlug = this.extractSlugForMatching(post.authorUrl);
+      if (aSlug && aSlug === pSlug) return true;
+      if (pSlug.length >= 3) {
+        const slugRegex = new RegExp('[/@=?&]' + pSlug + '(?:[/&?]|$)', 'i');
+        if (post.authorUrl && slugRegex.test(post.authorUrl)) return true;
+        if (post.link && slugRegex.test(post.link)) return true;
+      }
+    }
+
+    const normAuthor = this.normalizeAuthorName(post.nguoiDang || '');
+    const normName = this.normalizeAuthorName(profile.name || '');
+
+    if (normAuthor && normName) {
+      if (normAuthor === normName) return true;
+      if (normAuthor.includes(normName) || normName.includes(normAuthor)) {
+        const authorTokens = this.getDistinctiveTokens(normAuthor);
+        const nameTokens = this.getDistinctiveTokens(normName);
+        if (authorTokens.length > 0 && nameTokens.length > 0) {
+          if (authorTokens.some((t) => nameTokens.includes(t))) return true;
+        } else {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Tự động đồng bộ authorUid và authorUrl cho tất cả video theo danh sách profiles
+   */
+  public syncVideoAuthorsWithProfiles(): number {
+    try {
+      const videos = this.getAllVideos();
+      const profiles = this.getAllProfiles();
+      if (videos.length === 0 || profiles.length === 0) return 0;
+
+      let updatedCount = 0;
+      const updateStmt = this.db.prepare('UPDATE videos SET authorUid = ?, authorUrl = ? WHERE STT = ?');
+
+      const transaction = this.db.transaction(() => {
+        for (const v of videos) {
+          for (const p of profiles) {
+            if (this.isPostMatchingProfile(v, p)) {
+              if (v.authorUid !== p.uid || v.authorUrl !== p.profileUrl) {
+                updateStmt.run(p.uid || null, p.profileUrl || null, v.STT);
+                v.authorUid = p.uid;
+                v.authorUrl = p.profileUrl;
+                updatedCount++;
+              }
+              break;
+            }
+          }
+        }
+      });
+
+      transaction();
+      if (updatedCount > 0) {
+        this.logger.log(`[Database] Đã tự động đồng bộ authorUid / authorUrl cho ${updatedCount} bài viết theo profiles.`);
+      }
+      return updatedCount;
+    } catch (err: any) {
+      this.logger.warn(`[Database] Lỗi đồng bộ author bài viết: ${err?.message}`);
+      return 0;
+    }
   }
 
   private mapRowToProfile(row: any): UserProfileItem {
@@ -908,5 +1063,162 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     // Reopen database connection
     this.initDatabase();
     this.logger.log(`[Database] Đã thay thế thành công CSDL từ file tải lên.`);
+  }
+
+  /**
+   * Ghi một mục nhật ký hoạt động hệ thống (Audit Log)
+   */
+  public addAuditLog(data: {
+    username: string;
+    action: string;
+    details?: string;
+    targetId?: string;
+    ipAddress?: string;
+  }): void {
+    try {
+      const id = 'log-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+      const timestamp = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO audit_logs (id, timestamp, username, action, details, targetId, ipAddress)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          timestamp,
+          data.username || 'system',
+          data.action,
+          data.details || null,
+          data.targetId || null,
+          data.ipAddress || null
+        );
+    } catch (err: any) {
+      this.logger.warn(`[Database] Lỗi ghi audit log: ${err?.message}`);
+    }
+  }
+
+  /**
+   * Thống kê nhanh cho trang Nhật ký hoạt động
+   */
+  public getAuditStats(): {
+    total: number;
+    today: number;
+    deletes7d: number;
+    loginFailed7d: number;
+    topUser: { username: string; count: number } | null;
+  } {
+    try {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const count = (sql: string, ...params: any[]) =>
+        ((this.db.prepare(sql).get(...params) as { c: number }) || { c: 0 }).c;
+
+      const total = count(`SELECT COUNT(*) as c FROM audit_logs`);
+      const today = count(`SELECT COUNT(*) as c FROM audit_logs WHERE timestamp >= ?`, startOfToday.toISOString());
+      const deletes7d = count(
+        `SELECT COUNT(*) as c FROM audit_logs WHERE timestamp >= ? AND action LIKE '%DELETE%'`,
+        sevenDaysAgo
+      );
+      const loginFailed7d = count(
+        `SELECT COUNT(*) as c FROM audit_logs WHERE timestamp >= ? AND action = 'LOGIN_FAILED'`,
+        sevenDaysAgo
+      );
+      const top = this.db
+        .prepare(
+          `SELECT username, COUNT(*) as count FROM audit_logs
+           WHERE timestamp >= ? AND action NOT IN ('LOGIN_FAILED')
+           GROUP BY username ORDER BY count DESC LIMIT 1`
+        )
+        .get(sevenDaysAgo) as { username: string; count: number } | undefined;
+
+      return { total, today, deletes7d, loginFailed7d, topUser: top || null };
+    } catch (err: any) {
+      this.logger.warn(`[Database] Lỗi thống kê audit logs: ${err?.message}`);
+      return { total: 0, today: 0, deletes7d: 0, loginFailed7d: 0, topUser: null };
+    }
+  }
+
+  /**
+   * Lấy danh sách nhật ký hoạt động có phân trang và tìm kiếm
+   */
+  public getAuditLogs(
+    limit: number = 100,
+    offset: number = 0,
+    search?: string,
+    action?: string
+  ): { logs: any[]; total: number } {
+    try {
+      let whereClause = '1=1';
+      const params: any[] = [];
+
+      if (action && action !== 'all') {
+        whereClause += ' AND action = ?';
+        params.push(action);
+      }
+
+      if (search && search.trim()) {
+        whereClause += ' AND (username LIKE ? OR details LIKE ? OR targetId LIKE ?)';
+        const term = `%${search.trim()}%`;
+        params.push(term, term, term);
+      }
+
+      const countRow = this.db
+        .prepare(`SELECT COUNT(*) as count FROM audit_logs WHERE ${whereClause}`)
+        .get(...params) as { count: number };
+      const total = countRow ? countRow.count : 0;
+
+      const logs = this.db
+        .prepare(`SELECT * FROM audit_logs WHERE ${whereClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`)
+        .all(...params, limit, offset);
+
+      return { logs, total };
+    } catch (err: any) {
+      this.logger.error(`[Database] Lỗi lấy danh sách audit logs: ${err?.message}`);
+      return { logs: [], total: 0 };
+    }
+  }
+
+  /**
+   * Xóa nhật ký hoạt động cũ hơn X ngày
+   */
+  public clearAuditLogs(days: number = 30): number {
+    try {
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+      const res = this.db.prepare('DELETE FROM audit_logs WHERE timestamp < ?').run(cutoff);
+      return res.changes;
+    } catch (err: any) {
+      this.logger.error(`[Database] Lỗi dọn dẹp audit logs: ${err?.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Xóa hàng loạt bài viết theo danh sách STT hoặc ID
+   */
+  public deleteVideosBulk(ids: (string | number)[]): { deletedCount: number } {
+    if (!ids || ids.length === 0) return { deletedCount: 0 };
+    let deletedCount = 0;
+    const deleteByStt = this.db.prepare('DELETE FROM videos WHERE STT = ?');
+    const deleteById = this.db.prepare('DELETE FROM videos WHERE id = ?');
+
+    const transaction = this.db.transaction((targets: (string | number)[]) => {
+      for (const target of targets) {
+        let res;
+        if (typeof target === 'number' || /^\d+$/.test(String(target))) {
+          res = deleteByStt.run(Number(target));
+        } else {
+          res = deleteById.run(String(target));
+        }
+        if (res && res.changes > 0) {
+          deletedCount += res.changes;
+        }
+      }
+    });
+
+    transaction(ids);
+    this.checkpoint();
+    return { deletedCount };
   }
 }
