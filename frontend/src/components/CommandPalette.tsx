@@ -107,18 +107,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   // Tạo danh sách tổng hợp để điều hướng bàn phím
   const allSelectableItems = useMemo(() => {
-    const list: Array<{
-      type: 'profile' | 'post' | 'nav';
-      data: any;
-      id: string;
-    }> = [];
+    type SelectableItem =
+      | { type: 'profile'; data: UserProfileItem; id: string }
+      | { type: 'post'; data: VideoItem; id: string }
+      | { type: 'nav'; data: (typeof navItems)[number]; id: string };
+
+    const list: SelectableItem[] = [];
 
     filteredProfiles.forEach((p) => list.push({ type: 'profile', data: p, id: p.id }));
     filteredPosts.forEach((post) => list.push({ type: 'post', data: post, id: post.id || String(post.STT) }));
     filteredNav.forEach((item) => list.push({ type: 'nav', data: item, id: item.id }));
 
     return list;
-  }, [filteredProfiles, filteredPosts, filteredNav]);
+  }, [filteredProfiles, filteredPosts, filteredNav, navItems]);
 
   // Giữ selectedIndex trong khoảng hợp lệ
   useEffect(() => {

@@ -26,7 +26,10 @@ export function parseNumberDetailed(text?: string | number | null): ParsedNumber
   }
 
   // Regex nhận diện cụm số kèm đơn vị tùy chọn
-  const match = raw.match(/([\d.,\s]+)\s*(triệu|tr|nghìn|ngàn|k|m|b|tỷ)?(?=\s|[^\w]|$)/i);
+  // Đơn vị chỉ được khớp khi theo sau là ranh giới từ Unicode-aware (không phải chữ cái, kể cả chữ có dấu)
+  const match =
+    raw.match(/([\d.,]+)\s*(triệu|tr|nghìn|ngàn|k|m|b|tỷ|n)(?![\p{L}\p{N}])/iu) ||
+    raw.match(/([\d.,]+)/iu);
   if (!match) {
     return { value: 0, found: false, raw };
   }
@@ -105,11 +108,11 @@ export function parseNumberDetailed(text?: string | number | null): ParsedNumber
   }
 
   let multiplier = 1;
-  if (['k', 'nghìn', 'ngàn'].includes(unit)) multiplier = 1000;
+  if (['k', 'nghìn', 'ngàn', 'n'].includes(unit)) multiplier = 1000;
   else if (['m', 'triệu', 'tr'].includes(unit)) multiplier = 1000000;
   else if (['b', 'tỷ'].includes(unit)) multiplier = 1000000000;
 
-  const finalVal = Math.floor(val * multiplier);
+  const finalVal = multiplier > 1 ? Math.round(val * multiplier) : Math.floor(val);
   return {
     value: finalVal >= 0 ? finalVal : 0,
     found: true,

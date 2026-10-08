@@ -98,8 +98,8 @@ export const ViolationTable: React.FC<ViolationTableProps> = ({
       const res = await vocabularyApi.rescan();
       setRescanFeedback(`Đã quét lại ${res.totalScanned} bài viết: phát hiện ${res.violationCount} bài vi phạm.`);
       setTimeout(() => setRescanFeedback(null), 4000);
-    } catch (err: any) {
-      alert(err.message || 'Lỗi quét lại bài viết.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi quét lại bài viết.');
     } finally {
       setIsRescanning(false);
     }

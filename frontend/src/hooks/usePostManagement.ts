@@ -234,6 +234,13 @@ export function usePostManagement({
     const others: VideoItem[] = [];
 
     videos.forEach((v) => {
+      // 1. Ưu tiên sử dụng nhãn profileId từ Backend (Single Source of Truth, O(1))
+      if (v.profileId && map.has(v.profileId)) {
+        map.get(v.profileId)!.push(v);
+        return;
+      }
+
+      // 2. Fallback dự phòng tương thích ngược nếu video chưa được gán nhãn
       let matched = false;
       for (const p of profiles) {
         if (isPostMatchingProfile(v, p)) {

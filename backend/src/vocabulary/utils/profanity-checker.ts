@@ -248,8 +248,8 @@ export function updateRawRulesJson(jsonStr: string): { success: boolean; error?:
       description: item.description ? String(item.description).trim() : '',
       enabled: item.enabled !== false,
       severity: item.severity || 'HIGH',
-      words: Array.isArray(item.words) ? item.words.map((w: any) => String(w).trim()).filter(Boolean) : [],
-      patterns: Array.isArray(item.patterns) ? item.patterns.map((p: any) => String(p).trim()).filter(Boolean) : [],
+      words: Array.isArray(item.words) ? item.words.map((w: unknown) => String(w).trim()).filter(Boolean) : [],
+      patterns: Array.isArray(item.patterns) ? item.patterns.map((p: unknown) => String(p).trim()).filter(Boolean) : [],
     }));
 
     const saved = saveViolationRules(validated);
@@ -257,8 +257,8 @@ export function updateRawRulesJson(jsonStr: string): { success: boolean; error?:
       return { success: false, error: 'Không thể ghi file JSON.' };
     }
     return { success: true };
-  } catch (e: any) {
-    return { success: false, error: `Cú pháp JSON không hợp lệ: ${e?.message}` };
+  } catch (e: unknown) {
+    return { success: false, error: `Cú pháp JSON không hợp lệ: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 

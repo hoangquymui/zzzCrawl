@@ -67,7 +67,7 @@ export const ProfileManagementPage: React.FC = () => {
 
   // Toast state
   const [toast, setToast] = useState<ToastItem | null>(null);
-  const toastTimerRef = useRef<any>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'error') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -113,7 +113,7 @@ export const ProfileManagementPage: React.FC = () => {
         setHasCookie(cookieData.hasCookie);
         setCookieCount(cookieData.cookieCount);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Lỗi khi tải dữ liệu profile:', err);
     } finally {
       setIsLoading(false);
@@ -199,8 +199,8 @@ export const ProfileManagementPage: React.FC = () => {
       await profileManagementApi.crawlProfiles(urls);
       setStatus('SCANNING');
       setIsTerminalOpen(true);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Không thể bắt đầu tiến trình cào profile.');
+    } catch (err: unknown) {
+      setErrorMsg((err as Error)?.message || 'Không thể bắt đầu tiến trình cào profile.');
     }
   };
 
@@ -209,7 +209,7 @@ export const ProfileManagementPage: React.FC = () => {
     try {
       await profileManagementApi.stopCrawl();
       setStatus('STOPPED');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Lỗi dừng cào:', err);
     }
   };
@@ -220,8 +220,8 @@ export const ProfileManagementPage: React.FC = () => {
     try {
       await profileManagementApi.deleteProfile(id);
       setProfiles((prev) => prev.filter((p) => p.id !== id));
-    } catch (err: any) {
-      alert('Lỗi xóa profile: ' + err.message);
+    } catch (err: unknown) {
+      alert('Lỗi xóa profile: ' + ((err as Error)?.message || String(err)));
     }
   };
 
@@ -231,8 +231,8 @@ export const ProfileManagementPage: React.FC = () => {
     try {
       await profileManagementApi.clearAll();
       setProfiles([]);
-    } catch (err: any) {
-      alert('Lỗi xóa tất cả: ' + err.message);
+    } catch (err: unknown) {
+      alert('Lỗi xóa tất cả: ' + ((err as Error)?.message || String(err)));
     }
   };
 
@@ -247,8 +247,8 @@ export const ProfileManagementPage: React.FC = () => {
         showToast(res.message, 'info');
       }
       await loadData();
-    } catch (err: any) {
-      showToast(err.message || 'Lỗi khi quét người dùng từ dữ liệu', 'error');
+    } catch (err: unknown) {
+      showToast((err as Error)?.message || 'Lỗi khi quét người dùng từ dữ liệu', 'error');
     } finally {
       setIsSyncingData(false);
     }

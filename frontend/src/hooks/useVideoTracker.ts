@@ -229,8 +229,8 @@ export function useVideoTracker() {
       // Cập nhật lại danh sách video local
       setVideos((prev) =>
         prev.filter((v) => {
-          const vId = v.id || v.STT;
-          return !ids.includes(vId as any) && (v.STT === undefined || !ids.includes(v.STT)) && (v.id === undefined || !ids.includes(v.id));
+          const isMatch = (v.id !== undefined && ids.includes(v.id)) || (v.STT !== undefined && ids.includes(v.STT));
+          return !isMatch;
         })
       );
       addToast(`Đã xóa thành công ${res.deletedCount || ids.length} bài viết!`, 'success');

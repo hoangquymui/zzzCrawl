@@ -9,13 +9,35 @@ import { catchError, tap } from 'rxjs/operators';
 import { DatabaseService } from '../database/database.service';
 import { AuthService } from '../auth/auth.service';
 
+interface AuditRequestBody {
+  ids?: string[];
+  username?: string;
+  role?: string;
+  urls?: string[];
+  url?: string;
+  profileUrl?: string;
+  word?: string;
+  name?: string;
+  key?: string;
+  [key: string]: unknown;
+}
+
+interface AuditResponsePayload {
+  data?: { id?: string | number; STT?: string | number; loai?: string; nguoiDang?: string; link?: string };
+  count?: number;
+  message?: string;
+  deletedCount?: number;
+  [key: string]: unknown;
+}
+
 type Req = {
   method: string;
   route?: { path?: string };
   originalUrl?: string;
   params?: Record<string, string>;
-  body?: any;
-  headers: Record<string, any>;
+  query?: Record<string, unknown>;
+  body?: AuditRequestBody;
+  headers: Record<string, string | string[] | undefined>;
   ip?: string;
   user?: { username?: string };
   socket?: { remoteAddress?: string };
@@ -27,7 +49,7 @@ interface RuleResult {
   targetId?: string;
 }
 
-type Rule = (req: Req, res: any) => RuleResult | null;
+type Rule = (req: Req, res?: AuditResponsePayload) => RuleResult | null;
 
 const short = (v: unknown, max = 200): string => {
   const s = typeof v === 'string' ? v : JSON.stringify(v ?? '');
@@ -116,7 +138,7 @@ const RULES: Record<string, Rule> = {
   // Nhật ký
   'DELETE /audit-logs/clear': (q, r) => ({
     action: 'CLEAR_AUDIT_LOGS',
-    details: `Dọn ${r?.deletedCount ?? 0} bản ghi cũ hơn ${(q as any).query?.days ?? 30} ngày`,
+    details: `Dọn ${r?.deletedCount ?? 0} bản ghi cũ hơn ${q.query?.days ?? 30} ngày`,
   }),
 };
 
@@ -127,7 +149,7 @@ export class AuditInterceptor implements NestInterceptor {
     private readonly authService: AuthService
   ) {}
 
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getType() !== 'http') return next.handle();
 
     const req = context.switchToHttp().getRequest<Req>();
@@ -169,7 +191,9 @@ export class AuditInterceptor implements NestInterceptor {
   private resolveUsername(req: Req): string {
     if (req.user?.username) return req.user.username;
     try {
-      const u = this.authService.verifyToken(req.headers?.['authorization']);
+      const authHeader = req.headers?.['authorization'];
+      const token = Array.isArray(authHeader) ? authHeader[0] : authHeader;
+      const u = token ? this.authService.verifyToken(token) : null;
       if (u?.username) return u.username;
     } catch {
       // ignore

@@ -67,10 +67,10 @@ export const CookiePage: React.FC = () => {
         setActiveTab(targetSlot.id);
         setRawInput(targetSlot.rawCookie || '');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFeedback({
         type: 'error',
-        message: err.message || 'Lỗi khi tải thông tin cookie từ hệ thống',
+        message: (err as Error)?.message || 'Lỗi khi tải thông tin cookie từ hệ thống',
       });
     } finally {
       setIsLoading(false);
@@ -177,11 +177,11 @@ export const CookiePage: React.FC = () => {
             : 'Cookie này sẽ tạm dừng và không được dùng để cào dữ liệu.'
         }`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFeedback({
         type: 'error',
         message:
-          err.message || `Lỗi khi thay đổi trạng thái Cookie ${currentSlot.id}`,
+          (err as Error)?.message || `Lỗi khi thay đổi trạng thái Cookie ${currentSlot.id}`,
       });
     } finally {
       setIsToggling(false);
@@ -197,11 +197,11 @@ export const CookiePage: React.FC = () => {
       );
       setFeedback(null);
       await cookieApi.startBrowserLogin(activeTab);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setIsBrowserLoggingIn(false);
       setFeedback({
         type: 'error',
-        message: err.message || `Không thể mở trình duyệt cho Cookie ${activeTab}`,
+        message: (err as Error)?.message || `Không thể mở trình duyệt cho Cookie ${activeTab}`,
       });
     }
   };
@@ -268,10 +268,10 @@ export const CookiePage: React.FC = () => {
           updated.detectedCookies?.c_user || 'N/A'
         }). Cookie đã được BẬT sẵn sàng luân phiên! Hãy bấm "Kiểm tra Cookie" để xác thực phiên đăng nhập.`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFeedback({
         type: 'error',
-        message: err.message || `Lỗi khi lưu Cookie ${activeTab}`,
+        message: (err as Error)?.message || `Lỗi khi lưu Cookie ${activeTab}`,
       });
     } finally {
       setIsSaving(false);
@@ -303,10 +303,10 @@ export const CookiePage: React.FC = () => {
           message: result.message,
         });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFeedback({
         type: 'error',
-        message: err.message || `Lỗi khi kiểm tra Cookie ${activeTab}`,
+        message: (err as Error)?.message || `Lỗi khi kiểm tra Cookie ${activeTab}`,
       });
     } finally {
       setIsChecking(false);
@@ -340,10 +340,10 @@ export const CookiePage: React.FC = () => {
         type: 'success',
         message: `Đã xóa sạch nội dung Cookie ${activeTab}. Trạng thái hiện tại: Chưa nạp (Đã tắt).`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       setFeedback({
         type: 'error',
-        message: err.message || `Lỗi khi xóa Cookie ${activeTab}`,
+        message: (err as Error)?.message || `Lỗi khi xóa Cookie ${activeTab}`,
       });
     } finally {
       setIsClearing(false);

@@ -96,7 +96,7 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
 
   // Toast state
   const [toast, setToast] = useState<ToastItem | null>(null);
-  const toastTimerRef = useRef<any>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'error') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -265,8 +265,8 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
         startDate: startDate || undefined,
         endDate: endDate || undefined,
       });
-    } catch (err: any) {
-      const msg = err.message || 'Lỗi khi bắt đầu quét';
+    } catch (err: unknown) {
+      const msg = (err as Error)?.message || 'Lỗi khi bắt đầu quét';
       showToast(msg, 'error');
       setLogs((prev) => [...prev, `[LỖI] ${msg}`]);
       setStatus('ERROR');
@@ -278,8 +278,8 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
     try {
       await profileScannerApi.stopScan();
       setStatus('CANCELLED');
-    } catch (err: any) {
-      alert(`Lỗi khi dừng: ${err.message}`);
+    } catch (err: unknown) {
+      alert(`Lỗi khi dừng: ${(err as Error)?.message}`);
     }
   };
 
@@ -313,8 +313,8 @@ export const VideoProfilePage: React.FC<VideoProfilePageProps> = ({ onAddVideo, 
         setIsCookieModalOpen(false);
         setCookieSaveMsg(null);
       }, 1500);
-    } catch (err: any) {
-      setCookieSaveMsg(`❌ Lỗi: ${err.message}`);
+    } catch (err: unknown) {
+      setCookieSaveMsg(`❌ Lỗi: ${(err as Error)?.message}`);
     } finally {
       setIsSavingCookie(false);
     }

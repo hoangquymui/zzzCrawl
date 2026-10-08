@@ -24,25 +24,54 @@ export function isTikTokUrl(url: string): boolean {
   }
 }
 
+function parseUrlPath(url: string): { pathname: string; search: string; segments: string[]; host: string } {
+  try {
+    const parsed = new URL(url.trim().match(/^https?:\/\//i) ? url.trim() : `https://${url.trim()}`);
+    const pathname = parsed.pathname.toLowerCase();
+    const search = parsed.search.toLowerCase();
+    const segments = pathname.split('/').filter(Boolean);
+    const host = parsed.hostname.toLowerCase();
+    return { pathname, search, segments, host };
+  } catch {
+    const clean = url.trim().toLowerCase();
+    const parts = clean.split('?');
+    const pathname = parts[0] || '';
+    const search = parts[1] ? `?${parts[1]}` : '';
+    const segments = pathname.replace(/^https?:\/\/[^/]+/, '').split('/').filter(Boolean);
+    return { pathname, search, segments, host: '' };
+  }
+}
+
 /**
  * Kiểm tra xem URL có phải là link rút gọn hoặc link chuyển tiếp (redirect) cần phân giải không
  */
 export function isRedirectUrl(url: string): boolean {
   if (!url) return false;
-  const u = url.trim().toLowerCase();
-  return (
-    (isFacebookUrl(u) &&
-      (u.includes('fb.watch') ||
-        u.includes('/share/') ||
-        u.includes('/l.php') ||
-        u.includes('/watch') ||
-        u.includes('video.php'))) ||
-    (isTikTokUrl(u) &&
-      (u.includes('vt.tiktok.com') ||
-        u.includes('vm.tiktok.com') ||
-        u.includes('/t/') ||
-        u.includes('/v/')))
-  );
+  const { pathname, segments, host } = parseUrlPath(url);
+
+  if (isFacebookUrl(url)) {
+    return (
+      host === 'fb.watch' ||
+      host.endsWith('.fb.watch') ||
+      segments[0] === 'share' ||
+      pathname.includes('/l.php') ||
+      segments[0] === 'watch' ||
+      pathname.includes('video.php')
+    );
+  }
+
+  if (isTikTokUrl(url)) {
+    return (
+      host === 'vt.tiktok.com' ||
+      host.endsWith('.vt.tiktok.com') ||
+      host === 'vm.tiktok.com' ||
+      host.endsWith('.vm.tiktok.com') ||
+      segments[0] === 't' ||
+      segments[0] === 'v'
+    );
+  }
+
+  return false;
 }
 
 /**
@@ -65,43 +94,47 @@ export function detectPlatform(url: string): PlatformType {
  */
 export function detectContentType(url: string): ContentType {
   if (!url) return 'unknown';
-  const u = url.trim().toLowerCase();
+  const { pathname, search, segments } = parseUrlPath(url);
 
   // 1. TikTok
-  if (isTikTokUrl(u)) {
-    if (u.includes('/photo/')) return 'photo';
-    if (u.includes('/video/')) return 'video';
+  if (isTikTokUrl(url)) {
+    if (segments.includes('photo')) return 'photo';
+    if (segments.includes('video')) return 'video';
     return 'video'; // Default TikTok
   }
 
   // 2. Facebook
-  if (u.includes('/reel/') || u.includes('/reels/') || u.includes('/share/r')) {
+  if (
+    segments.includes('reel') ||
+    segments.includes('reels') ||
+    (segments[0] === 'share' && segments[1] === 'r')
+  ) {
     return 'reel';
   }
   if (
-    u.includes('/watch') ||
-    u.includes('/videos/') ||
-    u.includes('video.php') ||
-    u.includes('/share/v')
+    segments[0] === 'watch' ||
+    segments.includes('videos') ||
+    pathname.includes('video.php') ||
+    (segments[0] === 'share' && segments[1] === 'v')
   ) {
     return 'video';
   }
   if (
-    u.includes('/photo/') ||
-    u.includes('/photos/') ||
-    u.includes('photo.php') ||
-    u.includes('/share/p')
+    segments.includes('photo') ||
+    segments.includes('photos') ||
+    pathname.includes('photo.php') ||
+    (segments[0] === 'share' && segments[1] === 'p')
   ) {
     return 'photo';
   }
-  if (u.includes('/groups/')) {
+  if (segments.includes('groups')) {
     return 'group_post';
   }
   if (
-    u.includes('/posts/') ||
-    u.includes('permalink.php') ||
-    u.includes('story.php') ||
-    (u.includes('profile.php') && (u.includes('story_fbid=') || u.includes('fbid=')))
+    segments.includes('posts') ||
+    pathname.includes('permalink.php') ||
+    pathname.includes('story.php') ||
+    (pathname.includes('profile.php') && (search.includes('story_fbid=') || search.includes('fbid=')))
   ) {
     return 'post';
   }

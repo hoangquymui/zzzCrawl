@@ -26,6 +26,9 @@ export interface VideoItem {
   confidence?: number;
   fallbackReason?: string;
   missingFields?: string[];
+  containerFound?: boolean;
+  profileId?: string;
+  profileName?: string;
 }
 
 export interface CrawlStatusEvent {

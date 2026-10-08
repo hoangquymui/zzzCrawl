@@ -6,9 +6,74 @@ import { VideoItem } from '../videos/interfaces/video.interface';
 import { UserProfileItem } from '../profiles/interfaces/profile-management.interface';
 import { UserPayload } from '../auth/auth.service';
 import { normalizeFacebookUrl } from '../scraper/utils/url-cleaner';
+import { isPostMatchingProfile } from '../profiles/utils/profile-matcher';
+import type { CookieSlot, CookieCheckResult } from '../cookies/cookie.service';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const BetterSqlite3 = require('better-sqlite3');
+
+export type SqlParam = string | number | boolean | null | undefined | Buffer;
+
+export interface DbVideoRow {
+  id?: string | null;
+  STT: number;
+  link: string;
+  caption?: string | null;
+  loai?: string | null;
+  nguoiDang?: string | null;
+  authorUid?: string | null;
+  authorUrl?: string | null;
+  ngayDang?: string | null;
+  SoLuongNguoiShare?: number | null;
+  LuotXem?: number | null;
+  LuotLike?: number | null;
+  LuotComment?: number | null;
+  lastUpdated?: string | null;
+  postId?: string | null;
+  isShared?: number | null;
+  originalAuthor?: string | null;
+  originalAuthorUrl?: string | null;
+  originalPostUrl?: string | null;
+  isViolation?: number | null;
+  violationReason?: string | null;
+  crawlSource?: string | null;
+  crawlStatus?: string | null;
+  confidence?: number | null;
+  fallbackReason?: string | null;
+  missingFields?: string | null;
+  profileId?: string | null;
+  profileName?: string | null;
+}
+
+export interface DbProfileRow {
+  id: string;
+  profileUrl: string;
+  uid?: string | null;
+  name: string;
+  birthday?: string | null;
+  birthYear?: string | null;
+  location?: string | null;
+  hometown?: string | null;
+  gender?: string | null;
+  avatarUrl?: string | null;
+  bio?: string | null;
+  work?: string | null;
+  education?: string | null;
+  relationship?: string | null;
+  crawledAt: string;
+  status: 'SUCCESS' | 'PARTIAL' | 'ERROR';
+  errorMsg?: string | null;
+}
+
+export interface AuditLogRecord {
+  id: number;
+  timestamp: string;
+  username: string;
+  action: string;
+  details?: string;
+  ip?: string;
+  targetId?: string;
+}
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
@@ -237,8 +302,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
           updateStmt.run(fixedLink, fixedAuthorUrl, v.STT);
         }
       }
-    } catch (e: any) {
-      this.logger.warn(`[Database] Lỗi khi tự động làm sạch URL: ${e?.message}`);
+    } catch (e: unknown) {
+      this.logger.warn(`[Database] Lỗi khi tự động làm sạch URL: ${(e as Error)?.message}`);
     }
   }
 
@@ -266,8 +331,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
             this.saveAllVideos(videos);
             this.logger.log(`[Database] Đã tự động di chuyển ${videos.length} videos từ '${videoJson}' vào SQLite.`);
           }
-        } catch (e: any) {
-          this.logger.error(`[Database] Lỗi khi di chuyển dữ liệu videos: ${e?.message}`);
+        } catch (e: unknown) {
+          this.logger.error(`[Database] Lỗi khi di chuyển dữ liệu videos: ${(e as Error)?.message}`);
         }
       }
     }
@@ -289,8 +354,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
             this.saveAllProfiles(profiles);
             this.logger.log(`[Database] Đã tự động di chuyển ${profiles.length} profiles từ '${profileJson}' vào SQLite.`);
           }
-        } catch (e: any) {
-          this.logger.error(`[Database] Lỗi khi di chuyển dữ liệu profiles: ${e?.message}`);
+        } catch (e: unknown) {
+          this.logger.error(`[Database] Lỗi khi di chuyển dữ liệu profiles: ${(e as Error)?.message}`);
         }
       }
     }
@@ -357,8 +422,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
             this.saveCookie(raw);
             this.logger.log(`[Database] Đã tự động nạp Cookie từ '${cookieJson}' vào SQLite.`);
           }
-        } catch (e: any) {
-          this.logger.error(`[Database] Lỗi khi nạp cookie vào SQLite: ${e?.message}`);
+        } catch (e: unknown) {
+          this.logger.error(`[Database] Lỗi khi nạp cookie vào SQLite: ${(e as Error)?.message}`);
         }
       }
     }
@@ -369,14 +434,14 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   // ===========================================================================
 
   public getAllVideos(): VideoItem[] {
-    const rows = this.db.prepare('SELECT * FROM videos ORDER BY STT ASC').all() as any[];
+    const rows = this.db.prepare('SELECT * FROM videos ORDER BY STT ASC').all() as DbVideoRow[];
     return rows.map((r) => this.mapRowToVideo(r));
   }
 
   public getVideoByIdOrStt(idOrStt: string | number): VideoItem | null {
     const str = String(idOrStt);
     const num = isNaN(Number(str)) ? -1 : Number(str);
-    const row = this.db.prepare('SELECT * FROM videos WHERE id = ? OR STT = ?').get(str, num) as any;
+    const row = this.db.prepare('SELECT * FROM videos WHERE id = ? OR STT = ?').get(str, num) as DbVideoRow | undefined;
     return row ? this.mapRowToVideo(row) : null;
   }
 
@@ -385,7 +450,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   public getVideoByLink(link: string): VideoItem | null {
-    const row = this.db.prepare('SELECT * FROM videos WHERE link = ?').get(link) as any;
+    const row = this.db.prepare('SELECT * FROM videos WHERE link = ?').get(link) as DbVideoRow | undefined;
     return row ? this.mapRowToVideo(row) : null;
   }
 
@@ -537,7 +602,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     return result.changes > 0;
   }
 
-  private mapRowToVideo(row: any): VideoItem {
+  private mapRowToVideo(row: DbVideoRow): VideoItem {
     return {
       id: row.id || (row.link?.includes('tiktok.com') ? `tt-${row.STT}` : `fb-${row.STT}`),
       STT: row.STT,
@@ -552,7 +617,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       LuotXem: Number(row.LuotXem) || 0,
       LuotLike: Number(row.LuotLike) || 0,
       LuotComment: Number(row.LuotComment) || 0,
-      lastUpdated: row.lastUpdated,
+      lastUpdated: row.lastUpdated || undefined,
       postId: row.postId || undefined,
       isShared: Boolean(row.isShared),
       originalAuthor: row.originalAuthor || undefined,
@@ -560,6 +625,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       originalPostUrl: row.originalPostUrl || undefined,
       isViolation: Boolean(row.isViolation),
       violationReason: row.violationReason || undefined,
+      profileId: row.profileId || undefined,
+      profileName: row.profileName || undefined,
     };
   }
 
@@ -568,22 +635,22 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   // ===========================================================================
 
   public getAllProfiles(): UserProfileItem[] {
-    const rows = this.db.prepare('SELECT * FROM profiles ORDER BY crawledAt DESC').all() as any[];
+    const rows = this.db.prepare('SELECT * FROM profiles ORDER BY crawledAt DESC').all() as DbProfileRow[];
     return rows.map((r) => this.mapRowToProfile(r));
   }
 
   public getProfileById(id: string): UserProfileItem | null {
-    const row = this.db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as any;
+    const row = this.db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as DbProfileRow | undefined;
     return row ? this.mapRowToProfile(row) : null;
   }
 
   public getProfileByUid(uid: string): UserProfileItem | null {
-    const row = this.db.prepare('SELECT * FROM profiles WHERE uid = ?').get(uid) as any;
+    const row = this.db.prepare('SELECT * FROM profiles WHERE uid = ?').get(uid) as DbProfileRow | undefined;
     return row ? this.mapRowToProfile(row) : null;
   }
 
   public getProfileByUrl(url: string): UserProfileItem | null {
-    const row = this.db.prepare('SELECT * FROM profiles WHERE profileUrl = ?').get(url) as any;
+    const row = this.db.prepare('SELECT * FROM profiles WHERE profileUrl = ?').get(url) as DbProfileRow | undefined;
     return row ? this.mapRowToProfile(row) : null;
   }
 
@@ -836,13 +903,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         this.logger.log(`[Database] Đã tự động đồng bộ authorUid / authorUrl cho ${updatedCount} bài viết theo profiles.`);
       }
       return updatedCount;
-    } catch (err: any) {
-      this.logger.warn(`[Database] Lỗi đồng bộ author bài viết: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`[Database] Lỗi đồng bộ author bài viết: ${(err as Error)?.message}`);
       return 0;
     }
   }
 
-  private mapRowToProfile(row: any): UserProfileItem {
+  private mapRowToProfile(row: DbProfileRow): UserProfileItem {
     return {
       id: row.id,
       profileUrl: normalizeFacebookUrl(row.profileUrl),
@@ -859,7 +926,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       education: row.education || undefined,
       relationship: row.relationship || undefined,
       crawledAt: row.crawledAt,
-      status: row.status as any,
+      status: row.status,
       errorMsg: row.errorMsg || undefined,
     };
   }
@@ -874,12 +941,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
   public getUserByUsername(username: string): (UserPayload & { password: string }) | null {
     const cleanUser = (username || '').trim().toLowerCase();
-    const row = this.db.prepare('SELECT * FROM users WHERE LOWER(username) = ?').get(cleanUser) as any;
+    const row = this.db.prepare('SELECT * FROM users WHERE LOWER(username) = ?').get(cleanUser) as (UserPayload & { password: string }) | undefined;
     return row || null;
   }
 
   public getUserById(id: string): (UserPayload & { password: string }) | null {
-    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as (UserPayload & { password: string }) | undefined;
     return row || null;
   }
 
@@ -943,7 +1010,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     this.setSetting('cookie', content);
   }
 
-  public getCookieLastCheck(): any | null {
+  public getCookieLastCheck(): CookieCheckResult | null {
     const raw = this.getSetting('cookie_last_check');
     if (!raw) return null;
     try {
@@ -953,22 +1020,22 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  public saveCookieLastCheck(result: any): void {
+  public saveCookieLastCheck(result: CookieCheckResult): void {
     this.setSetting('cookie_last_check', JSON.stringify(result));
   }
 
-  public getCookieSlots(): any[] | null {
+  public getCookieSlots(): CookieSlot[] | null {
     const raw = this.getSetting('cookie_slots');
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : null;
+      return Array.isArray(parsed) ? (parsed as CookieSlot[]) : null;
     } catch {
       return null;
     }
   }
 
-  public saveCookieSlots(slots: any[]): void {
+  public saveCookieSlots(slots: CookieSlot[]): void {
     this.setSetting('cookie_slots', JSON.stringify(slots));
   }
 
@@ -979,8 +1046,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     if (this.db) {
       try {
         this.db.pragma('wal_checkpoint(TRUNCATE)');
-      } catch (err: any) {
-        this.logger.warn(`[Database] wal_checkpoint cảnh báo: ${err?.message}`);
+      } catch (err: unknown) {
+        this.logger.warn(`[Database] wal_checkpoint cảnh báo: ${(err as Error)?.message}`);
       }
     }
   }
@@ -1031,10 +1098,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     if (this.db) {
       try {
         this.db.close();
-      } catch (err: any) {
-        this.logger.warn(`[Database] Lỗi đóng kết nối DB: ${err?.message}`);
+      } catch (err: unknown) {
+        this.logger.warn(`[Database] Lỗi đóng kết nối DB: ${(err as Error)?.message}`);
       }
-      this.db = null as any;
+      this.db = null as unknown as DatabaseType;
     }
 
     // Backup current database.sqlite to database.sqlite.bak
@@ -1042,8 +1109,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     if (fs.existsSync(dbPath)) {
       try {
         fs.copyFileSync(dbPath, backupPath);
-      } catch (err: any) {
-        this.logger.warn(`[Database] Lỗi tạo file sao lưu: ${err?.message}`);
+      } catch (err: unknown) {
+        this.logger.warn(`[Database] Lỗi tạo file sao lưu: ${(err as Error)?.message}`);
       }
     }
 
@@ -1092,8 +1159,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
           data.targetId || null,
           data.ipAddress || null
         );
-    } catch (err: any) {
-      this.logger.warn(`[Database] Lỗi ghi audit log: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`[Database] Lỗi ghi audit log: ${(err as Error)?.message}`);
     }
   }
 
@@ -1112,7 +1179,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       startOfToday.setHours(0, 0, 0, 0);
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-      const count = (sql: string, ...params: any[]) =>
+      const count = (sql: string, ...params: SqlParam[]) =>
         ((this.db.prepare(sql).get(...params) as { c: number }) || { c: 0 }).c;
 
       const total = count(`SELECT COUNT(*) as c FROM audit_logs`);
@@ -1134,8 +1201,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         .get(sevenDaysAgo) as { username: string; count: number } | undefined;
 
       return { total, today, deletes7d, loginFailed7d, topUser: top || null };
-    } catch (err: any) {
-      this.logger.warn(`[Database] Lỗi thống kê audit logs: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`[Database] Lỗi thống kê audit logs: ${(err as Error)?.message}`);
       return { total: 0, today: 0, deletes7d: 0, loginFailed7d: 0, topUser: null };
     }
   }
@@ -1148,10 +1215,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     offset: number = 0,
     search?: string,
     action?: string
-  ): { logs: any[]; total: number } {
+  ): { logs: AuditLogRecord[]; total: number } {
     try {
       let whereClause = '1=1';
-      const params: any[] = [];
+      const params: SqlParam[] = [];
 
       if (action && action !== 'all') {
         whereClause += ' AND action = ?';
@@ -1171,11 +1238,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
       const logs = this.db
         .prepare(`SELECT * FROM audit_logs WHERE ${whereClause} ORDER BY timestamp DESC LIMIT ? OFFSET ?`)
-        .all(...params, limit, offset);
+        .all(...params, limit, offset) as AuditLogRecord[];
 
       return { logs, total };
-    } catch (err: any) {
-      this.logger.error(`[Database] Lỗi lấy danh sách audit logs: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.error(`[Database] Lỗi lấy danh sách audit logs: ${(err as Error)?.message}`);
       return { logs: [], total: 0 };
     }
   }
@@ -1188,8 +1255,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
       const res = this.db.prepare('DELETE FROM audit_logs WHERE timestamp < ?').run(cutoff);
       return res.changes;
-    } catch (err: any) {
-      this.logger.error(`[Database] Lỗi dọn dẹp audit logs: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.error(`[Database] Lỗi dọn dẹp audit logs: ${(err as Error)?.message}`);
       return 0;
     }
   }

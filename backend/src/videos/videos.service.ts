@@ -15,7 +15,10 @@ import { VideosGateway } from './videos.gateway';
 import { DatabaseService } from '../database/database.service';
 import { CookieService } from '../cookies/cookie.service';
 import { checkCaptionViolation } from '../vocabulary/utils/profanity-checker';
+import { isBoilerplateCaption } from '../scraper/utils/text-normalizer';
+import { mergeRefreshedVideo } from './utils/merge-refresh';
 import { ProfileManagementService } from '../profiles/profile-management.service';
+import { resolveProfileForVideo, groupVideosByProfile } from '../profiles/utils/profile-matcher';
 
 @Injectable()
 export class VideosService implements OnModuleInit, OnModuleDestroy {
@@ -132,7 +135,45 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
   }
 
   public getVideos(): VideoItem[] {
+    this.annotateVideosWithProfiles();
     return this.trackedVideos;
+  }
+
+  public annotateVideo(video: VideoItem): void {
+    if (!video.profileId) {
+      try {
+        const profiles = this.profileManagementService.listProfiles();
+        const resolved = resolveProfileForVideo(video, profiles);
+        if (resolved.profileId) {
+          video.profileId = resolved.profileId;
+          video.profileName = resolved.profileName;
+        }
+      } catch {}
+    }
+  }
+
+  public annotateVideosWithProfiles(): void {
+    try {
+      const profiles = this.profileManagementService.listProfiles();
+      if (!profiles || profiles.length === 0) return;
+      for (const v of this.trackedVideos) {
+        if (!v.profileId) {
+          const resolved = resolveProfileForVideo(v, profiles);
+          if (resolved.profileId) {
+            v.profileId = resolved.profileId;
+            v.profileName = resolved.profileName;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  public getVideosGroupedByProfile(): {
+    profilePostMap: Record<string, VideoItem[]>;
+    otherPosts: VideoItem[];
+  } {
+    const profiles = this.profileManagementService.listProfiles();
+    return groupVideosByProfile(this.getVideos(), profiles);
   }
 
   public generateNextId(link: string): string {
@@ -240,7 +281,13 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const violation = checkCaptionViolation(data.caption);
+    const shouldCheckViolation =
+      Boolean(data.caption) &&
+      data.caption.trim() !== 'Không có tiêu đề' &&
+      !isBoilerplateCaption(data.caption);
+    const violation = shouldCheckViolation
+      ? checkCaptionViolation(data.caption)
+      : { isViolation: false, reason: '' };
     data.isViolation = violation.isViolation;
     data.violationReason = violation.reason;
 
@@ -259,21 +306,18 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (authorProfile) {
-        let needsResave = false;
+        data.profileId = authorProfile.id;
+        data.profileName = authorProfile.name;
         if (!data.authorUid && authorProfile.uid) {
           data.authorUid = authorProfile.uid;
-          needsResave = true;
         }
         if (!data.authorUrl && authorProfile.profileUrl) {
           data.authorUrl = authorProfile.profileUrl;
-          needsResave = true;
         }
-        if (needsResave) {
-          this.storageService.saveVideos(this.trackedVideos);
-        }
+        this.storageService.saveVideos(this.trackedVideos);
       }
-    } catch (profileErr: any) {
-      this.logger.warn(`Lỗi khi tự động thêm profile cho người đăng (${data.nguoiDang}): ${profileErr?.message}`);
+    } catch (profileErr: unknown) {
+      this.logger.warn(`Lỗi khi tự động thêm profile cho người đăng (${data.nguoiDang}): ${(profileErr as Error)?.message}`);
     }
 
     return data;
@@ -299,26 +343,10 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Không thể xác minh đủ dữ liệu mới; dữ liệu đã lưu được giữ nguyên.');
     }
     const resolvedLink = this.scraperService.sanitizeUrl(freshData.link || video.link);
-    const freshCaption = freshData.caption || video.caption || '';
-    const violationCheck = checkCaptionViolation(freshCaption);
-    const updatedVideo: VideoItem = {
-      ...video,
+    const updatedVideo: VideoItem = mergeRefreshedVideo(video, {
       ...freshData,
-      id: video.id,
-      STT: video.STT,
       link: resolvedLink,
-      caption: freshCaption,
-      nguoiDang: freshData.nguoiDang || video.nguoiDang,
-      isShared: freshData.isShared !== undefined ? freshData.isShared : video.isShared,
-      originalAuthor: freshData.originalAuthor || video.originalAuthor,
-      originalAuthorUrl: freshData.originalAuthorUrl || video.originalAuthorUrl,
-      originalPostUrl: freshData.originalPostUrl
-        ? this.scraperService.sanitizeUrl(freshData.originalPostUrl)
-        : video.originalPostUrl ? this.scraperService.sanitizeUrl(video.originalPostUrl) : undefined,
-      isViolation: violationCheck.isViolation,
-      violationReason: violationCheck.reason,
-      lastUpdated: new Date().toISOString(),
-    };
+    });
 
     const idx = this.trackedVideos.findIndex(
       (v) => (video.id && v.id === video.id) || v.STT === video.STT
@@ -380,8 +408,9 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       if (hasFbVideos) {
         await this.cookieService.validateCookieForCrawl();
       }
-    } catch (err: any) {
-        this.logger.error(`[Làm mới đồng loạt] Cookie hết hạn hoặc không hợp lệ: ${err?.message || err}`);
+    } catch (err: unknown) {
+        const errMsg = (err as Error)?.message || String(err);
+        this.logger.error(`[Làm mới đồng loạt] Cookie hết hạn hoặc không hợp lệ: ${errMsg}`);
         this.videosGateway.emitCrawlStatus('Lỗi: Cookie hết hạn', '');
         this.isRefreshingAll = false;
         if (source === 'Tự động định kỳ') {
@@ -430,26 +459,10 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
           throw new Error('Không thể xác minh đủ dữ liệu mới; giữ nguyên dữ liệu đã lưu');
         }
         const resolvedLink = this.scraperService.sanitizeUrl(freshData.link || item.link);
-        const freshCaption = freshData.caption || item.caption || '';
-        const violationCheck = checkCaptionViolation(freshCaption);
-        const mergedVideo: VideoItem = {
-          ...item,
+        const mergedVideo: VideoItem = mergeRefreshedVideo(item, {
           ...freshData,
-          id: item.id,
-          STT: item.STT,
           link: resolvedLink,
-          caption: freshCaption,
-          nguoiDang: freshData.nguoiDang || item.nguoiDang,
-          isShared: freshData.isShared !== undefined ? freshData.isShared : item.isShared,
-          originalAuthor: freshData.originalAuthor || item.originalAuthor,
-          originalAuthorUrl: freshData.originalAuthorUrl || item.originalAuthorUrl,
-          originalPostUrl: freshData.originalPostUrl
-            ? this.scraperService.sanitizeUrl(freshData.originalPostUrl)
-            : item.originalPostUrl ? this.scraperService.sanitizeUrl(item.originalPostUrl) : undefined,
-          isViolation: violationCheck.isViolation,
-          violationReason: violationCheck.reason,
-          lastUpdated: new Date().toISOString(),
-        };
+        });
 
         const idx = this.trackedVideos.findIndex(
           (v) => (item.id && v.id === item.id) || v.STT === item.STT
@@ -475,7 +488,13 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       async () => {
         while (queue.length > 0) {
           const item = queue.shift();
-          if (item) await runTask(item);
+          if (item) {
+            await runTask(item);
+            if (queue.length > 0) {
+              const delay = Math.floor(Math.random() * (1200 - 300 + 1)) + 300;
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            }
+          }
         }
       }
     );

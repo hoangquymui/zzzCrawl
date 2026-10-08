@@ -9,7 +9,7 @@ import {
 } from './interfaces/profile-management.interface';
 import { VideosGateway } from '../videos/videos.gateway';
 import { VideosService } from '../videos/videos.service';
-import { CookieService } from '../cookies/cookie.service';
+import { CookieService, ParsedCookieItem } from '../cookies/cookie.service';
 import { normalizeFacebookUrl } from '../scraper/utils/url-cleaner';
 
 @Injectable()
@@ -52,8 +52,8 @@ export class ProfileManagementService implements OnModuleInit {
         this.videosService.reloadVideos();
         this.videosGateway.emitVideosUpdated(this.videosService.getVideos());
       }
-    } catch (err: any) {
-      this.logger.warn(`Lỗi thông báo cập nhật videos: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`Lỗi thông báo cập nhật videos: ${(err as Error)?.message}`);
     }
   }
 
@@ -106,8 +106,8 @@ export class ProfileManagementService implements OnModuleInit {
       this.state.profiles = this.profiles;
       this.state.profilesCount = this.profiles.length;
       this.logger.log(`[Storage] Đã nạp ${this.profiles.length} profiles từ SQLite.`);
-    } catch (err: any) {
-      this.logger.error(`[Storage] Lỗi nạp profiles từ SQLite: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.error(`[Storage] Lỗi nạp profiles từ SQLite: ${(err as Error)?.message}`);
       const p = this.getEffectiveStoragePath();
       if (fs.existsSync(p)) {
         try {
@@ -130,12 +130,12 @@ export class ProfileManagementService implements OnModuleInit {
       try {
         fs.writeFileSync(p, JSON.stringify(this.profiles, null, 2), 'utf8');
       } catch {}
-    } catch (err: any) {
-      this.logger.error(`[Storage] Lỗi ghi profiles vào SQLite: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.error(`[Storage] Lỗi ghi profiles vào SQLite: ${(err as Error)?.message}`);
     }
   }
 
-  public loadCookies(): any[] {
+  public loadCookies(): ParsedCookieItem[] {
     if (this.cookieService) {
       return this.cookieService.loadCookies();
     }
@@ -149,9 +149,9 @@ export class ProfileManagementService implements OnModuleInit {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
-          .filter((c) => c && c.name && c.value)
+          .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === 'object' && 'name' in c && 'value' in c))
           .map((c) => {
-            let domain = c.domain || '.facebook.com';
+            let domain = (c.domain as string) || '.facebook.com';
             if (!domain.includes('facebook.com')) {
               domain = '.facebook.com';
             }
@@ -162,11 +162,11 @@ export class ProfileManagementService implements OnModuleInit {
               else if (s === 'strict') sameSite = 'Strict';
               else if (s === 'none' || s === 'no_restriction') sameSite = 'None';
             }
-            const item: any = {
+            const item: ParsedCookieItem = {
               name: String(c.name).trim(),
               value: String(c.value).trim(),
               domain,
-              path: c.path || '/',
+              path: (c.path as string) || '/',
             };
             if (sameSite) {
               item.sameSite = sameSite;
@@ -197,7 +197,7 @@ export class ProfileManagementService implements OnModuleInit {
           path: '/',
         };
       })
-      .filter(Boolean);
+      .filter((c): c is ParsedCookieItem => c !== null);
   }
 
   public getEffectiveAvatarsDir(): string {
@@ -261,8 +261,8 @@ export class ProfileManagementService implements OnModuleInit {
           return true;
         }
       }
-    } catch (err: any) {
-      this.logger.warn(`Lỗi download avatar cho UID ${safeUid}: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`Lỗi download avatar cho UID ${safeUid}: ${(err as Error)?.message}`);
     }
     return false;
   }
@@ -493,7 +493,7 @@ export class ProfileManagementService implements OnModuleInit {
 
     try {
       await this.cookieService.validateCookieForCrawl();
-    } catch (err: any) {
+    } catch (err: unknown) {
       this.emitLog(`[LỖI] Cookie hết hạn! Vui lòng cập nhật cookie mới.`);
       throw new BadRequestException('Cookie hết hạn');
     }
@@ -587,8 +587,8 @@ export class ProfileManagementService implements OnModuleInit {
              }
          }
       }
-    } catch (fetchErr: any) {
-      this.logger.warn(`Fetch HTTP không thành công cho ${profileUrl}: ${fetchErr?.message}`);
+    } catch (fetchErr: unknown) {
+      this.logger.warn(`Fetch HTTP không thành công cho ${profileUrl}: ${(fetchErr as Error)?.message}`);
     }
 
     // 1. Trích xuất UID thật từ HTML (nếu chưa có uid số từ URL)
@@ -770,15 +770,16 @@ export class ProfileManagementService implements OnModuleInit {
           this.emitLog(
             `✔ Quét thành công: "${profileItem.name}" | UID: ${profileItem.uid || 'Chưa rõ'} | Avatar: ${profileItem.avatarUrl ? 'Có' : 'Không'}`
           );
-        } catch (err: any) {
+        } catch (err: unknown) {
           skippedCount++;
-          this.emitLog(`✖ [BỎ QUA] ${profileUrl}: ${err?.message || 'Trang cá nhân không tồn tại'} (Không thêm vào danh sách)`);
+          const errMsg = (err as Error)?.message || 'Trang cá nhân không tồn tại';
+          this.emitLog(`✖ [BỎ QUA] ${profileUrl}: ${errMsg} (Không thêm vào danh sách)`);
 
           // Nếu URL này đã từng tồn tại trong danh sách từ trước, đánh dấu ERROR
           const existIdx = this.profiles.findIndex((p) => p.profileUrl === profileUrl);
           if (existIdx !== -1) {
             this.profiles[existIdx].status = 'ERROR';
-            this.profiles[existIdx].errorMsg = err?.message || 'Không tìm thấy profile';
+            this.profiles[existIdx].errorMsg = errMsg;
             this.db.upsertProfile(this.profiles[existIdx]);
             this.saveToDatabase();
             this.state.profiles = this.profiles;
@@ -821,9 +822,10 @@ export class ProfileManagementService implements OnModuleInit {
           message: `Đã hoàn thành quét ${total} profiles.`,
         });
       }
-    } catch (fatalErr: any) {
-      this.logger.error(`Lỗi hệ thống quét profile: ${fatalErr?.message}`);
-      this.emitLog(`[LỖI TIẾN TRÌNH] ${fatalErr?.message}`);
+    } catch (fatalErr: unknown) {
+      const fatalMsg = (fatalErr as Error)?.message || String(fatalErr);
+      this.logger.error(`Lỗi hệ thống quét profile: ${fatalMsg}`);
+      this.emitLog(`[LỖI TIẾN TRÌNH] ${fatalMsg}`);
       this.state.status = 'ERROR';
       this.videosGateway.emitProfileMgmtStatus('ERROR');
     } finally {
@@ -953,8 +955,8 @@ export class ProfileManagementService implements OnModuleInit {
     if (profileUrl && profileUrl.includes('facebook.com')) {
       try {
         newProfile = await this.crawlSingleProfileHttp(profileUrl);
-      } catch (crawlErr: any) {
-        this.logger.debug(`Không thể cào trực tiếp profile ${profileUrl}: ${crawlErr?.message}`);
+      } catch (crawlErr: unknown) {
+        this.logger.debug(`Không thể cào trực tiếp profile ${profileUrl}: ${(crawlErr as Error)?.message}`);
       }
     }
 
@@ -1143,8 +1145,8 @@ export class ProfileManagementService implements OnModuleInit {
             this.db.upsertVideo(v);
           }
         }
-      } catch (err: any) {
-        this.logger.warn(`Lỗi khi đồng bộ profile từ video ${v.link}: ${err?.message}`);
+      } catch (err: unknown) {
+        this.logger.warn(`Lỗi khi đồng bộ profile từ video ${v.link}: ${(err as Error)?.message}`);
       }
     }
 

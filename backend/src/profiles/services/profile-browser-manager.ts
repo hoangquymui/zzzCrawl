@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
-import { CookieService } from '../../cookies/cookie.service';
+import { chromium, Browser, BrowserContext, Page, Response } from 'playwright';
+import { CookieService, ParsedCookieItem } from '../../cookies/cookie.service';
 
 @Injectable()
 export class ProfileBrowserManager {
@@ -21,7 +21,7 @@ export class ProfileBrowserManager {
     });
   }
 
-  public async createContext(browser: Browser, cookies: any[] = []): Promise<BrowserContext> {
+  public async createContext(browser: Browser, cookies: ParsedCookieItem[] = []): Promise<BrowserContext> {
     const context: BrowserContext = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -32,8 +32,8 @@ export class ProfileBrowserManager {
     if (cookies.length > 0) {
       try {
         await context.addCookies(cookies);
-      } catch (cookieErr: any) {
-        this.logger.warn(`[CẢNH BÁO] Lỗi khi thêm cookie: ${cookieErr?.message || String(cookieErr)}`);
+      } catch (cookieErr: unknown) {
+        this.logger.warn(`[CẢNH BÁO] Lỗi khi thêm cookie: ${(cookieErr as Error)?.message || String(cookieErr)}`);
       }
     }
 
@@ -63,7 +63,7 @@ export class ProfileBrowserManager {
     return false;
   }
 
-  public async checkIfBlocked(page: Page, response?: any): Promise<boolean> {
+  public async checkIfBlocked(page: Page, response?: Response | null): Promise<boolean> {
     if (response && (response.status() === 403 || response.status() === 429)) {
       return true;
     }
@@ -106,8 +106,8 @@ export class ProfileBrowserManager {
     if (browser) {
       try {
         await browser.close();
-      } catch (err: any) {
-        this.logger.warn(`Lỗi khi đóng browser: ${err?.message || String(err)}`);
+      } catch (err: unknown) {
+        this.logger.warn(`Lỗi khi đóng browser: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }

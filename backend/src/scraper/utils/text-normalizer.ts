@@ -56,11 +56,22 @@ const BOILERPLATE_CAPTIONS = [
  * Giải mã các ký tự mã hóa HTML (&#x...;, &amp;, &quot;,...) và escape JSON
  * KHÔNG làm mất newline hay nén whitespace
  */
+function safeCodePoint(cp: number, original: string): string {
+  if (isNaN(cp) || cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+    return original;
+  }
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return original;
+  }
+}
+
 export function decodeHtmlEntities(text?: string | null): string {
   if (!text) return '';
   let res = String(text)
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (match, hex) => safeCodePoint(parseInt(hex, 16), match))
+    .replace(/&#(\d+);/g, (match, dec) => safeCodePoint(parseInt(dec, 10), match))
     .replace(/&#039;/g, "'")
     .replace(/\\r\\n/g, '\n')
     .replace(/\\r/g, '')
@@ -125,14 +136,6 @@ export function decodeHtmlEntities(text?: string | null): string {
     );
   } catch {}
 
-  // Xử lý surrogate pairs (emoji): \uD83D\uDE00 → 😀
-  try {
-    res = res.replace(
-      /[\uD800-\uDBFF][\uDC00-\uDFFF]/g,
-      (pair) => pair
-    );
-  } catch {}
-
   return res;
 }
 
@@ -151,7 +154,8 @@ export function normalizeCaption(text?: string | null): string {
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n')
-    .replace(/\s*(?:\.\.\.|…)?\s*(?:See more|Xem thêm)$/i, '')
+    .replace(/(?:\.\.\.|…)\s*(?:See more|Xem thêm)$/i, '')
+    .replace(/(?:^|\n)\s*(?:See more|Xem thêm)$/i, '')
     .trim();
 }
 
@@ -160,12 +164,14 @@ export function normalizeCaption(text?: string | null): string {
  */
 export function isBoilerplateCaption(text?: string | null): boolean {
   if (!text) return true;
-  const clean = text.trim().toLowerCase();
+  const clean = text
+    .trim()
+    .toLowerCase()
+    .replace(/[.,:;!?…\-]+$/, '')
+    .trim();
   if (!clean) return true;
 
-  return BOILERPLATE_CAPTIONS.some(
-    (b) => clean === b || clean.startsWith(b + ' ') || clean.endsWith(' ' + b)
-  );
+  return BOILERPLATE_CAPTIONS.some((b) => clean === b);
 }
 
 /**

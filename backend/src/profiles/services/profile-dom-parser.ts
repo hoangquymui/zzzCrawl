@@ -2,6 +2,92 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Page } from 'playwright';
 import { ScannedPostItem } from '../interfaces/profile-scanner.interface';
 import { ScraperService } from '../../scraper/scraper.service';
+import { parseNumber } from '../../scraper/utils/number-parser';
+import { parseDateUnified } from '../../scraper/utils/date-parser';
+
+export interface ExtractedGraphQLStory {
+  permalink_url: string;
+  msg: string;
+  author: string;
+  authorId: string;
+  isShared: boolean;
+  attachedReelUrl: string;
+  attachedVideoId: string;
+  attachedAuthor: string;
+  creation_time: number;
+  reaction_count: number;
+  comment_count: number;
+  share_count: number;
+}
+
+export interface GraphQLStoryActor {
+  id?: string;
+  name?: string;
+}
+
+export interface GraphQLStoryAttachment {
+  url?: string;
+  media?: { id?: string | number; url?: string };
+  styles?: { attachment?: { media?: { id?: string | number; url?: string } } };
+}
+
+export interface GraphQLFeedbackContainer {
+  count?: number;
+  reaction_count?: { count?: number };
+  unified_reactors?: { count?: number };
+  top_reactions?: { count?: number };
+  reactors?: { count?: number };
+  i18n_reaction_count?: string;
+  total_comment_count?: number;
+  comment_count?: { total_count?: number };
+  comment_rendering_instance?: { comments?: { total_count?: number } };
+  comments_count_summary_to_context?: { count?: number };
+  i18n_comment_count?: string;
+  share_count?: { count?: number };
+  i18n_share_count?: string;
+  feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } };
+  story_ufi_container?: { story?: { feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } } } };
+  comet_feed_ufi_container?: { story?: { feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } } } };
+  story?: {
+    feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } };
+    story_ufi_container?: { story?: { feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } } } };
+    comet_feed_ufi_container?: { story?: { feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } } } };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface GraphQLStoryObject {
+  permalink_url?: string;
+  wwwURL?: string;
+  url?: string;
+  story_fbid?: string | number;
+  story_type?: string;
+  is_shared?: boolean;
+  is_reshare?: boolean;
+  is_share_story?: boolean;
+  creation_time?: number | string;
+  message?: { text?: string };
+  actors?: GraphQLStoryActor[];
+  attached_story?: GraphQLStoryObject;
+  attachments?: GraphQLStoryAttachment[];
+  feedback?: GraphQLFeedbackContainer;
+  feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } };
+  comet_sections?: {
+    content?: {
+      story?: {
+        message?: { text?: string };
+        attached_story?: GraphQLStoryObject;
+        creation_time?: number | string;
+        feedback?: GraphQLFeedbackContainer;
+      };
+    };
+    attached_story?: GraphQLStoryObject;
+    feedback?: GraphQLFeedbackContainer;
+  };
+  story?: { feedback_context?: { feedback_target_with_context?: { ufi_renderer?: { feedback?: GraphQLFeedbackContainer } } } };
+  [key: string]: unknown;
+}
 
 @Injectable()
 export class ProfileDomParser {
@@ -613,39 +699,40 @@ export class ProfileDomParser {
     }
   }
 
-  public extractStoriesFromObject(obj: any, results: any[] = []): any[] {
+  public extractStoriesFromObject(obj: unknown, results: ExtractedGraphQLStory[] = []): ExtractedGraphQLStory[] {
     if (!obj || typeof obj !== 'object') return results;
+    const storyObj = obj as GraphQLStoryObject;
 
-    const rawUrlCandidate = obj.permalink_url || obj.wwwURL || obj.url;
+    const rawUrlCandidate = storyObj.permalink_url || storyObj.wwwURL || storyObj.url;
     let urlCandidate = '';
     if (rawUrlCandidate && typeof rawUrlCandidate === 'string') {
       urlCandidate = rawUrlCandidate;
-    } else if (obj.story_fbid && obj.actors?.[0]?.id) {
-      urlCandidate = `https://www.facebook.com/permalink.php?story_fbid=${obj.story_fbid}&id=${obj.actors[0].id}`;
+    } else if (storyObj.story_fbid && storyObj.actors?.[0]?.id) {
+      urlCandidate = `https://www.facebook.com/permalink.php?story_fbid=${storyObj.story_fbid}&id=${storyObj.actors[0].id}`;
     }
 
     if (urlCandidate) {
       const pUrl = String(urlCandidate).replace(/\\\//g, '/');
       if (!this.isPostPermalink(pUrl)) {
-        for (const k of Object.keys(obj)) {
-          this.extractStoriesFromObject(obj[k], results);
+        for (const k of Object.keys(storyObj)) {
+          this.extractStoriesFromObject(storyObj[k], results);
         }
         return results;
       }
       const msg =
-        obj.message?.text ||
-        obj.comet_sections?.content?.story?.message?.text ||
+        storyObj.message?.text ||
+        storyObj.comet_sections?.content?.story?.message?.text ||
         '';
-      const author = obj.actors?.[0]?.name || '';
-      const authorId = obj.actors?.[0]?.id || '';
+      const author = storyObj.actors?.[0]?.name || '';
+      const authorId = storyObj.actors?.[0]?.id || '';
 
       let attachedReelUrl = '';
       let attachedVideoId = '';
       let attachedAuthor = '';
       const attached =
-        obj.attached_story ||
-        obj.comet_sections?.attached_story ||
-        obj.comet_sections?.content?.story?.attached_story;
+        storyObj.attached_story ||
+        storyObj.comet_sections?.attached_story ||
+        storyObj.comet_sections?.content?.story?.attached_story;
       if (attached) {
         if (attached.permalink_url) {
           attachedReelUrl = String(attached.permalink_url).replace(/\\\//g, '/');
@@ -666,9 +753,9 @@ export class ProfileDomParser {
       }
 
       let creation_time =
-        obj.creation_time ||
+        storyObj.creation_time ||
         attached?.creation_time ||
-        obj.comet_sections?.content?.story?.creation_time ||
+        storyObj.comet_sections?.content?.story?.creation_time ||
         0;
       if (typeof creation_time === 'string') {
         creation_time = parseInt(creation_time, 10) || 0;
@@ -679,67 +766,49 @@ export class ProfileDomParser {
       let share_count = 0;
 
       const feedbackPaths = [
-        obj.feedback,
-        obj.comet_sections?.feedback?.story?.story_ufi_container?.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
-        obj.comet_sections?.feedback?.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
-        obj.comet_sections?.feedback?.story?.comet_feed_ufi_container?.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
-        obj.comet_sections?.content?.story?.feedback,
-        obj.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
-        obj.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
+        storyObj.feedback,
+        storyObj.comet_sections?.feedback?.story?.story_ufi_container?.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
+        storyObj.comet_sections?.feedback?.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
+        storyObj.comet_sections?.feedback?.story?.comet_feed_ufi_container?.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
+        storyObj.comet_sections?.content?.story?.feedback,
+        storyObj.story?.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
+        storyObj.feedback_context?.feedback_target_with_context?.ufi_renderer?.feedback,
       ];
 
       for (const fb of feedbackPaths) {
         if (!fb || typeof fb !== 'object') continue;
 
         if (!reaction_count) {
-          reaction_count =
+          const directCount =
             fb.reaction_count?.count ||
             fb.unified_reactors?.count ||
             fb.top_reactions?.count ||
             fb.reactors?.count ||
             0;
+          reaction_count = typeof directCount === 'number' ? directCount : parseNumber(directCount);
           if (!reaction_count && fb.i18n_reaction_count) {
-            const mR = String(fb.i18n_reaction_count).match(/(\d+([,.]\d+)?)\s*([kKmM]|nghìn|triệu)?/);
-            if (mR) {
-              let n = parseFloat(mR[1].replace(',', '.'));
-              const unit = (mR[3] || '').toLowerCase();
-              if (unit === 'k' || unit === 'nghìn') n *= 1000;
-              else if (unit === 'm' || unit === 'triệu') n *= 1000000;
-              reaction_count = Math.round(n);
-            }
+            reaction_count = parseNumber(fb.i18n_reaction_count);
           }
         }
 
         if (!comment_count) {
-          comment_count =
+          const directCount =
             fb.total_comment_count ||
             fb.comment_count?.total_count ||
             fb.comment_rendering_instance?.comments?.total_count ||
             fb.comments_count_summary_to_context?.count ||
             0;
+          comment_count = typeof directCount === 'number' ? directCount : parseNumber(directCount);
           if (!comment_count && fb.i18n_comment_count) {
-            const mC = String(fb.i18n_comment_count).match(/(\d+([,.]\d+)?)\s*([kKmM]|nghìn|triệu)?/);
-            if (mC) {
-              let n = parseFloat(mC[1].replace(',', '.'));
-              const unit = (mC[3] || '').toLowerCase();
-              if (unit === 'k' || unit === 'nghìn') n *= 1000;
-              else if (unit === 'm' || unit === 'triệu') n *= 1000000;
-              comment_count = Math.round(n);
-            }
+            comment_count = parseNumber(fb.i18n_comment_count);
           }
         }
 
         if (!share_count) {
-          share_count = fb.share_count?.count || 0;
+          const directCount = fb.share_count?.count || 0;
+          share_count = typeof directCount === 'number' ? directCount : parseNumber(directCount);
           if (!share_count && fb.i18n_share_count) {
-            const mS = String(fb.i18n_share_count).match(/(\d+([,.]\d+)?)\s*([kKmM]|nghìn|triệu)?/);
-            if (mS) {
-              let n = parseFloat(mS[1].replace(',', '.'));
-              const unit = (mS[3] || '').toLowerCase();
-              if (unit === 'k' || unit === 'nghìn') n *= 1000;
-              else if (unit === 'm' || unit === 'triệu') n *= 1000000;
-              share_count = Math.round(n);
-            }
+            share_count = parseNumber(fb.i18n_share_count);
           }
         }
 
@@ -752,10 +821,10 @@ export class ProfileDomParser {
         author,
         authorId,
         isShared:
-          obj.is_shared === true ||
-          obj.is_reshare === true ||
-          obj.is_share_story === true ||
-          String(obj.story_type || '').toUpperCase() === 'RESHARE',
+          storyObj.is_shared === true ||
+          storyObj.is_reshare === true ||
+          storyObj.is_share_story === true ||
+          String(storyObj.story_type || '').toUpperCase() === 'RESHARE',
         attachedReelUrl,
         attachedVideoId,
         attachedAuthor,
@@ -766,50 +835,74 @@ export class ProfileDomParser {
       });
     }
 
-    for (const k of Object.keys(obj)) {
-      this.extractStoriesFromObject(obj[k], results);
+    for (const k of Object.keys(storyObj)) {
+      this.extractStoriesFromObject(storyObj[k], results);
     }
     return results;
   }
 
   public isPostPermalink(url: string): boolean {
     if (!url || url === 'N/A') return false;
-    const u = url.trim().toLowerCase();
+    let pathname = '';
+    let search = '';
+    let segments: string[] = [];
+    try {
+      const parsed = new URL(url.trim().match(/^https?:\/\//i) ? url.trim() : `https://${url.trim()}`);
+      pathname = parsed.pathname.toLowerCase();
+      search = parsed.search.toLowerCase();
+      segments = pathname.split('/').filter(Boolean);
+    } catch {
+      const clean = url.trim().toLowerCase();
+      const parts = clean.split('?');
+      pathname = parts[0] || '';
+      search = parts[1] ? `?${parts[1]}` : '';
+      segments = pathname.replace(/^https?:\/\/[^/]+/, '').split('/').filter(Boolean);
+    }
+
+    const excludedFirstSegments = new Set([
+      'hashtag',
+      'login',
+      'sharer.php',
+      'recover',
+      'messages',
+      'friends',
+      'notifications',
+      'about',
+      'privacy',
+      'p',
+      'people',
+    ]);
+
+    if (segments.length > 0 && excludedFirstSegments.has(segments[0])) {
+      return false;
+    }
 
     if (
-      u.includes('/hashtag/') ||
-      u.includes('/login') ||
-      u.includes('/sharer.php') ||
-      u.includes('/recover/') ||
-      u.includes('/messages/') ||
-      u.includes('/friends') ||
-      u.includes('/notifications') ||
-      u.includes('/about/') ||
-      u.includes('/privacy') ||
-      u.includes('/p/') ||
-      u.includes('/people/')
+      pathname.includes('/login') ||
+      pathname.includes('/sharer.php') ||
+      pathname.includes('/recover/')
     ) {
       return false;
     }
 
-    if (u.includes('profile.php') && !u.includes('story_fbid=') && !u.includes('fbid=')) {
+    if (pathname.includes('profile.php') && !search.includes('story_fbid=') && !search.includes('fbid=')) {
       return false;
     }
 
     return (
-      u.includes('permalink.php') ||
-      u.includes('story.php') ||
-      u.includes('/posts/') ||
-      u.includes('/reel/') ||
-      u.includes('/reels/') ||
-      u.includes('/watch') ||
-      u.includes('/videos/') ||
-      u.includes('fbid=')
+      pathname.includes('permalink.php') ||
+      pathname.includes('story.php') ||
+      segments.includes('posts') ||
+      segments.includes('reel') ||
+      segments.includes('reels') ||
+      segments.includes('watch') ||
+      segments.includes('videos') ||
+      search.includes('fbid=')
     );
   }
 
-  public parseGraphQLStories(text: string): any[] {
-    const stories: any[] = [];
+  public parseGraphQLStories(text: string): ExtractedGraphQLStory[] {
+    const stories: ExtractedGraphQLStory[] = [];
     const lines = text.split('\n').filter(Boolean);
     for (const line of lines) {
       try {
@@ -848,7 +941,16 @@ export class ProfileDomParser {
     return null;
   }
 
-  public parseFacebookDate(raw: any): { dateObj: Date | null; timestamp: number; formatted: string } {
+  public parseFacebookDate(raw: unknown, referenceNow?: Date): { dateObj: Date | null; timestamp: number; formatted: string } {
+    if (!raw && raw !== 0) return { dateObj: null, timestamp: 0, formatted: 'Gần đây' };
+    const res = parseDateUnified(raw, referenceNow);
+    if (!res.formatted) {
+      return { dateObj: null, timestamp: 0, formatted: 'Gần đây' };
+    }
+    return res;
+  }
+
+  private _oldParseFacebookDate(raw: unknown): { dateObj: Date | null; timestamp: number; formatted: string } {
     if (!raw) return { dateObj: null, timestamp: 0, formatted: 'Gần đây' };
 
     if (typeof raw === 'number' || /^\d{9,13}$/.test(String(raw).trim())) {
@@ -1006,8 +1108,9 @@ export class ProfileDomParser {
     startTimestamp: number | null,
     endTimestamp: number | null
   ): boolean {
-    if (!startTimestamp && !endTimestamp) return true;
-    if (!timestamp || timestamp === 0) return true;
+    const hasFilter = Boolean(startTimestamp || endTimestamp);
+    if (!hasFilter) return true;
+    if (!timestamp || timestamp === 0) return false;
     if (startTimestamp && timestamp < startTimestamp) return false;
     if (endTimestamp && timestamp > endTimestamp) return false;
     return true;

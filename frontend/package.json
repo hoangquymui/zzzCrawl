@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build --outDir ../backend/public --emptyOutDir && vite build",
-    "build:backend": "tsc -b && vite build --outDir ../backend/public --emptyOutDir",
+    "build": "tsc -b && vite build --outDir ../backend/public --emptyOutDir",
+    "build:backend": "npm run build",
+    "build:standalone": "tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
-import { chromium, Browser } from 'playwright';
+import { chromium, Browser, BrowserContext } from 'playwright';
 import { VideoItem } from '../videos/interfaces/video.interface';
 import { CookieService } from '../cookies/cookie.service';
 import { parseNumber, parseNumberDetailed, ParsedNumberDetail } from './utils/number-parser';
@@ -22,11 +22,14 @@ import {
   ContentType,
 } from './utils/url-cleaner';
 import { validateScrapeResult, ScrapeValidation } from './utils/scrape-validator';
+import { mergeScrapeResults as mergeScrapeResultsFn } from './utils/merge-scrape';
+import { parseDateUnified } from './utils/date-parser';
 
 @Injectable()
 export class ScraperService implements OnModuleDestroy {
   private readonly logger = new Logger(ScraperService.name);
   private browserInstance: Browser | null = null;
+  private browserLaunching: Promise<Browser> | null = null;
 
   constructor(
     @Inject(forwardRef(() => CookieService))
@@ -34,6 +37,7 @@ export class ScraperService implements OnModuleDestroy {
   ) {}
 
   public async onModuleDestroy(): Promise<void> {
+    this.browserLaunching = null;
     if (this.browserInstance) {
       try {
         await this.browserInstance.close();
@@ -90,7 +94,11 @@ export class ScraperService implements OnModuleDestroy {
    * Unix timestamp, ISO 8601, ngày tuyệt đối tiếng Việt, ngày tương đối tiếng Việt/Anh
    * Trả về định dạng chuẩn: YYYY-MM-DD HH:mm:ss
    */
-  public parseAnyDate(raw?: any): string {
+  public parseAnyDate(raw?: unknown, referenceNow?: Date): string {
+    return parseDateUnified(raw, referenceNow).formatted;
+  }
+
+  private _oldParseAnyDate(raw?: unknown): string {
     if (!raw) return '';
     const str = String(raw).trim();
     if (!str) return '';
@@ -410,29 +418,13 @@ export class ScraperService implements OnModuleDestroy {
   }
 
   private mergeScrapeResults(base: VideoItem, candidate: VideoItem): VideoItem {
-    // A fallback must only fill verified gaps; it must never erase data obtained earlier.
-    const isBrowserCandidate = candidate.crawlSource === 'playwright';
-    return {
-      ...base,
-      ...candidate,
-      link: candidate.link || base.link,
-      caption: candidate.caption || base.caption,
-      nguoiDang: candidate.nguoiDang || base.nguoiDang,
-      ngayDang: candidate.ngayDang || base.ngayDang,
-      postId: candidate.postId || base.postId,
-      authorUid: candidate.authorUid || base.authorUid,
-      authorUrl: candidate.authorUrl || base.authorUrl,
-      LuotXem: candidate.LuotXem || base.LuotXem,
-      LuotLike: isBrowserCandidate ? candidate.LuotLike : (candidate.LuotLike || base.LuotLike),
-      LuotComment: isBrowserCandidate ? candidate.LuotComment : (candidate.LuotComment || base.LuotComment),
-      SoLuongNguoiShare: isBrowserCandidate ? candidate.SoLuongNguoiShare : (candidate.SoLuongNguoiShare || base.SoLuongNguoiShare),
-    };
+    return mergeScrapeResultsFn(base, candidate);
   }
 
   /**
    * Tự động phân giải và theo dõi chuỗi redirect để lấy URL cuối cùng (Canonical/Final URL)
    */
-  public async resolveFinalUrl(url: string): Promise<string> {
+  public async resolveFinalUrl(url: string, slotId?: number): Promise<string> {
     if (!url) return '';
     const clean = this.sanitizeUrl(url);
 
@@ -443,7 +435,7 @@ export class ScraperService implements OnModuleDestroy {
 
       if (!isTikTok && this.cookieService) {
         try {
-          const cookies = this.cookieService.loadCookies();
+          const cookies = this.cookieService.loadCookies(slotId);
           if (Array.isArray(cookies) && cookies.length > 0) {
             const cookieStr = cookies
               .filter((c) => c && c.name && c.value)
@@ -458,7 +450,7 @@ export class ScraperService implements OnModuleDestroy {
         method: 'GET',
         headers,
         redirect: 'follow',
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(15000),
       });
 
       let finalUrl = res.url ? this.sanitizeUrl(res.url) : clean;
@@ -478,7 +470,7 @@ export class ScraperService implements OnModuleDestroy {
           !canonical.endsWith('tiktok.com') &&
           (canonical.includes('/reel/') ||
             canonical.includes('/videos/') ||
-            (canonical.includes('/watch') && !finalUrl.includes('/videos/')) ||
+            (this.isWatchUrl(canonical) && !finalUrl.includes('/videos/')) ||
             canonical.includes('/posts/') ||
             canonical.includes('/groups/') ||
             canonical.includes('/photo') ||
@@ -491,7 +483,7 @@ export class ScraperService implements OnModuleDestroy {
       }
 
       // Nếu finalUrl vẫn là /watch hoặc video.php, thử bóc tách author từ HTML để chuyển thành /[author]/videos/[id]/
-      if (finalUrl.includes('/watch') || finalUrl.includes('video.php')) {
+      if (this.isWatchUrl(finalUrl) || finalUrl.includes('video.php')) {
         const mVid = finalUrl.match(/[?&]v=(\d+)/) || clean.match(/[?&]v=(\d+)/);
         if (mVid) {
           const videoId = mVid[1];
@@ -516,7 +508,7 @@ export class ScraperService implements OnModuleDestroy {
               }
             }
           }
-          if (finalUrl.includes('/watch') || finalUrl.includes('video.php')) {
+          if (this.isWatchUrl(finalUrl) || finalUrl.includes('video.php')) {
             const mActorId =
               html.match(/"actors":\s*\[\s*\{[^}]*"id":\s*"(\d+)"/i) ||
               html.match(/"video_owner":\s*\{[^}]*"id":\s*"(\d+)"/i) ||
@@ -551,10 +543,42 @@ export class ScraperService implements OnModuleDestroy {
     'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
   };
 
+  public isLoginWall(html: string): boolean {
+    if (!html || html.length < 3000) return true;
+    const hasLoginForm =
+      /<form[^>]+action=["'][^"']*(?:login|checkpoint)[^"']*["']/i.test(html) ||
+      /<input[^>]+name=["'](?:email|pass)["']/i.test(html);
+    const mTitle = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = (mTitle ? mTitle[1] : '').trim().toLowerCase();
+    const hasLoginTitle =
+      title.startsWith('đăng nhập') ||
+      title.startsWith('log in') ||
+      title.startsWith('login');
+    return hasLoginForm || hasLoginTitle;
+  }
+
+  public isWatchUrl(url: string): boolean {
+    if (!url) return false;
+    try {
+      const u = new URL(url.trim().match(/^https?:\/\//i) ? url.trim() : `https://${url.trim()}`);
+      return (
+        (u.hostname === 'facebook.com' || u.hostname.endsWith('.facebook.com')) &&
+        (u.pathname === '/watch' || u.pathname.startsWith('/watch/'))
+      );
+    } catch {
+      return /(?:facebook\.com|fb\.watch)\/watch(?:\/|\?|$)/i.test(url);
+    }
+  }
+
   /**
    * Bóc tách Facebook bằng HTTP Request (~0.8s)
    */
-  public async scrapeFacebookHttp(url: string, stt: number = 1): Promise<VideoItem> {
+  public async scrapeFacebookHttp(
+    url: string,
+    stt: number = 1,
+    depth: number = 0,
+    slotId?: number
+  ): Promise<VideoItem> {
     const cleanUrl = this.sanitizeUrl(url);
     if (!isFacebookUrl(cleanUrl)) {
       throw new Error('Link Facebook không hợp lệ');
@@ -563,7 +587,7 @@ export class ScraperService implements OnModuleDestroy {
     let reqHeaders: Record<string, string> = { ...this.fbHeaders };
     try {
       if (this.cookieService) {
-        const cookies = this.cookieService.loadCookies();
+        const cookies = this.cookieService.loadCookies(slotId);
         if (Array.isArray(cookies) && cookies.length > 0) {
           const cookieStr = cookies
             .filter((c) => c && c.name && c.value)
@@ -576,24 +600,34 @@ export class ScraperService implements OnModuleDestroy {
       }
     } catch {}
 
-    const res = await fetch(cleanUrl, { headers: reqHeaders, redirect: 'follow' });
+    const res = await fetch(cleanUrl, {
+      headers: reqHeaders,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000),
+    });
     const finalHttpUrl = res.url ? this.sanitizeUrl(res.url) : cleanUrl;
     const html = await res.text();
-    let result = await this.parseFacebookHtml(html, finalHttpUrl, stt);
+    let result = await this.parseFacebookHtml(html, finalHttpUrl, stt, depth, slotId);
 
     // Nếu lần fetch đầu tiên bị login wall hoặc thiếu dữ liệu quan trọng, thử fallback qua Facebook Bot Headers
     const isLacking = !result.nguoiDang || (result.LuotXem === 0 && result.LuotLike === 0);
-    const isLoginWall = html.includes('/login') || html.length < 5000;
+    const isLoginWall = this.isLoginWall(html);
 
     if (isLacking || isLoginWall) {
       try {
-        const botRes = await fetch(cleanUrl, { headers: this.fbBotHeaders, redirect: 'follow' });
+        const botRes = await fetch(cleanUrl, {
+          headers: this.fbBotHeaders,
+          redirect: 'follow',
+          signal: AbortSignal.timeout(15000),
+        });
         if (botRes.ok) {
           const botHtml = await botRes.text();
           const botResult = await this.parseFacebookHtml(
             botHtml,
             botRes.url ? this.sanitizeUrl(botRes.url) : finalHttpUrl,
-            stt
+            stt,
+            depth,
+            slotId
           );
           if (botResult.nguoiDang || botResult.caption || botResult.LuotXem > 0 || botResult.LuotLike > 0) {
             result = this.mergeScrapeResults(result, botResult);
@@ -608,7 +642,13 @@ export class ScraperService implements OnModuleDestroy {
   /**
    * Phân tích HTML Facebook đã tải (dùng chung cho HTTP request và Playwright fallback)
    */
-  private async parseFacebookHtml(html: string, cleanUrl: string, stt: number): Promise<VideoItem> {
+  private async parseFacebookHtml(
+    html: string,
+    cleanUrl: string,
+    stt: number,
+    depth: number = 0,
+    slotId?: number
+  ): Promise<VideoItem> {
     let effectiveUrl = cleanUrl;
 
     // 0. Trích xuất Canonical URL hoặc og:url từ HTML để lấy link đích cuối cùng chuẩn nhất
@@ -623,7 +663,7 @@ export class ScraperService implements OnModuleDestroy {
         !canonical.endsWith('facebook.com') &&
         (canonical.includes('/reel/') ||
           canonical.includes('/videos/') ||
-          (canonical.includes('/watch') && !effectiveUrl.includes('/videos/')) ||
+          (this.isWatchUrl(canonical) && !effectiveUrl.includes('/videos/')) ||
           canonical.includes('/posts/') ||
           canonical.includes('/groups/') ||
           canonical.includes('/photo') ||
@@ -635,8 +675,7 @@ export class ScraperService implements OnModuleDestroy {
 
     const isReel =
       effectiveUrl.includes('/reel/') ||
-      effectiveUrl.includes('/share/r') ||
-      effectiveUrl.includes('/share/v');
+      effectiveUrl.includes('/share/r');
     const isPhoto =
       (effectiveUrl.includes('/photo/') || effectiveUrl.includes('photo.php') || effectiveUrl.includes('/photo?')) &&
       !effectiveUrl.includes('permalink.php') &&
@@ -902,9 +941,14 @@ export class ScraperService implements OnModuleDestroy {
           'lỗi',
           'content not found',
         ];
+        const cleanTitle = beforeDash
+          .toLowerCase()
+          .replace(/[.,:;!?…\-]+$/, '')
+          .trim();
         if (
           beforeDash &&
-          !invalidTitles.some((inv) => beforeDash.toLowerCase().includes(inv))
+          isValidAuthor(beforeDash) &&
+          !invalidTitles.some((inv) => cleanTitle === inv || cleanTitle === `${inv} -` || cleanTitle === `${inv} |`)
         ) {
           result.nguoiDang = beforeDash;
         }
@@ -993,7 +1037,7 @@ export class ScraperService implements OnModuleDestroy {
     }
 
     // 2e. Nếu link bài viết đang là /watch hoặc video.php, nâng cấp lên link video gốc theo tác giả
-    if ((effectiveUrl.includes('/watch') || effectiveUrl.includes('video.php')) && targetVideoId) {
+    if ((this.isWatchUrl(effectiveUrl) || effectiveUrl.includes('video.php')) && targetVideoId) {
       if (result.authorUrl) {
         const mPeople = result.authorUrl.match(/\/people\/[^/]+\/(\d+)/i);
         if (mPeople) {
@@ -1012,7 +1056,7 @@ export class ScraperService implements OnModuleDestroy {
           }
         }
       }
-      if ((effectiveUrl.includes('/watch') || effectiveUrl.includes('video.php')) && result.authorUid) {
+      if ((this.isWatchUrl(effectiveUrl) || effectiveUrl.includes('video.php')) && result.authorUid) {
         effectiveUrl = `https://www.facebook.com/${result.authorUid}/videos/${targetVideoId}/`;
         result.link = effectiveUrl;
       }
@@ -1025,6 +1069,7 @@ export class ScraperService implements OnModuleDestroy {
         try {
           const watchRes = await fetch(`https://www.facebook.com/watch/?v=${mId[1]}`, {
             headers: this.fbHeaders,
+            signal: AbortSignal.timeout(15000),
           });
           if (watchRes.ok) {
             const watchHtml = await watchRes.text();
@@ -1051,11 +1096,16 @@ export class ScraperService implements OnModuleDestroy {
     }
 
     // 4. Nếu là bài viết permalink / chia sẻ có video Reel nhúng bên trong, lấy lượt xem của video Reel đó
-    if (!result.LuotXem && isPermalink) {
+    if (!result.LuotXem && isPermalink && depth === 0) {
       const mEmbeddedVid = html.match(/(?:video_id|videoId|"video":\{"id"):["\s]*(\d+)/);
       if (mEmbeddedVid) {
         try {
-          const reelRes = await this.scrapeFacebookHttp(`https://www.facebook.com/reel/${mEmbeddedVid[1]}`, stt);
+          const reelRes = await this.scrapeFacebookHttp(
+            `https://www.facebook.com/reel/${mEmbeddedVid[1]}`,
+            stt,
+            depth + 1,
+            slotId
+          );
           if (reelRes.LuotXem > 0) {
             result.LuotXem = reelRes.LuotXem;
           }
@@ -1105,7 +1155,7 @@ export class ScraperService implements OnModuleDestroy {
     // - Nếu không có mắt xem: có ảnh -> Facebook Photo, không có ảnh/video -> Facebook Post
     if (isReel) {
       result.loai = 'Facebook Reel';
-    } else if (result.LuotXem > 0 || effectiveUrl.includes('/videos/') || effectiveUrl.includes('/watch')) {
+    } else if (result.LuotXem > 0 || effectiveUrl.includes('/videos/') || this.isWatchUrl(effectiveUrl)) {
       result.loai = 'Facebook Video';
     } else if (hasPhotoAttachment || isPhoto) {
       result.loai = 'Facebook Photo';
@@ -1166,7 +1216,11 @@ export class ScraperService implements OnModuleDestroy {
     if (!isTikTokUrl(cleanUrl)) {
       throw new Error('Link TikTok không hợp lệ');
     }
-    const res = await fetch(cleanUrl, { headers: this.ttHeaders, redirect: 'follow' });
+    const res = await fetch(cleanUrl, {
+      headers: this.ttHeaders,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000),
+    });
     const finalHttpUrl = res.url ? this.sanitizeUrl(res.url) : cleanUrl;
     const html = await res.text();
     return this.parseTikTokHtml(html, finalHttpUrl, stt);
@@ -1357,36 +1411,55 @@ export class ScraperService implements OnModuleDestroy {
   }
 
   private async getBrowser(): Promise<Browser> {
-    if (!this.browserInstance || !this.browserInstance.isConnected()) {
+    if (this.browserInstance && this.browserInstance.isConnected()) {
+      return this.browserInstance;
+    }
+    if (this.browserLaunching) {
+      return this.browserLaunching;
+    }
+
+    this.browserLaunching = (async () => {
       try {
         if (this.browserInstance) {
           await this.browserInstance.close().catch(() => {});
         }
       } catch {}
 
-      this.browserInstance = await chromium.launch({
-        headless: true,
-        args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
-      });
+      try {
+        const browser = await chromium.launch({
+          headless: true,
+          args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+        });
 
-      this.browserInstance.on('disconnected', () => {
-        this.logger.warn('[Playwright] Chromium browser đã bị ngắt kết nối (crash hoặc bị đóng). Sẽ tự động tái tạo phiên mới ở lần gọi tiếp theo.');
+        browser.on('disconnected', () => {
+          this.logger.warn('[Playwright] Chromium browser đã bị ngắt kết nối (crash hoặc bị đóng). Sẽ tự động tái tạo phiên mới ở lần gọi tiếp theo.');
+          this.browserInstance = null;
+          this.browserLaunching = null;
+        });
+
+        this.browserInstance = browser;
+        return browser;
+      } catch (err) {
         this.browserInstance = null;
-      });
-    }
-    return this.browserInstance;
+        throw err;
+      } finally {
+        this.browserLaunching = null;
+      }
+    })();
+
+    return this.browserLaunching;
   }
 
   /**
    * Fallback qua Playwright Browser (mở trang thật khi HTTP bị chặn/không parse được)
    */
-  public async scrapeWithBrowser(url: string, stt: number = 1): Promise<VideoItem> {
+  public async scrapeWithBrowser(url: string, stt: number = 1, slotId?: number): Promise<VideoItem> {
     const cleanUrl = this.sanitizeUrl(url);
     this.assertSupportedUrl(cleanUrl);
     const isTikTok = isTikTokUrl(cleanUrl);
 
     let browser = await this.getBrowser();
-    let context: any;
+    let context: BrowserContext;
     const contextOptions = {
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -1396,8 +1469,8 @@ export class ScraperService implements OnModuleDestroy {
 
     try {
       context = await browser.newContext(contextOptions);
-    } catch (ctxErr: any) {
-      this.logger.warn(`[Playwright] Lỗi tạo context (${ctxErr?.message}). Đang tái khởi động Chromium mới...`);
+    } catch (ctxErr: unknown) {
+      this.logger.warn(`[Playwright] Lỗi tạo context (${(ctxErr as Error)?.message}). Đang tái khởi động Chromium mới...`);
       this.browserInstance = null;
       browser = await this.getBrowser();
       context = await browser.newContext(contextOptions);
@@ -1406,13 +1479,13 @@ export class ScraperService implements OnModuleDestroy {
     // Nạp Cookie Facebook vào context nếu có
     if (!isTikTok && this.cookieService) {
       try {
-        const cookies = this.cookieService.loadCookies();
+        const cookies = this.cookieService.loadCookies(slotId);
         if (Array.isArray(cookies) && cookies.length > 0) {
           await context.addCookies(cookies);
           this.logger.log(`[Playwright] Đã nạp ${cookies.length} cookie vào phiên trình duyệt.`);
         }
-      } catch (err: any) {
-        this.logger.warn(`[Playwright] Không thể nạp cookie: ${err?.message}`);
+      } catch (err: unknown) {
+        this.logger.warn(`[Playwright] Không thể nạp cookie: ${(err as Error)?.message}`);
       }
     }
 
@@ -1447,9 +1520,9 @@ export class ScraperService implements OnModuleDestroy {
         ]);
       } catch {}
 
-      if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch') || cleanUrl.includes('/watch')) {
+      if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch')) {
         try {
-          await page.waitForURL((u) => !u.href.includes('/share/') && !u.href.includes('fb.watch') && !u.href.includes('/watch'), { timeout: 3000 });
+          await page.waitForURL((u) => !u.href.includes('/share/') && !u.href.includes('fb.watch'), { timeout: 3000 });
         } catch {}
       }
 
@@ -1461,7 +1534,7 @@ export class ScraperService implements OnModuleDestroy {
         !currentUrl.includes('/login') &&
         (currentUrl.includes('/reel/') ||
           currentUrl.includes('/videos/') ||
-          currentUrl.includes('/watch') ||
+          this.isWatchUrl(currentUrl) ||
           currentUrl.includes('/posts/') ||
           currentUrl.includes('permalink.php') ||
           currentUrl.includes('story.php') ||
@@ -1484,7 +1557,7 @@ export class ScraperService implements OnModuleDestroy {
             !cleanCanonical.endsWith('tiktok.com') &&
             (cleanCanonical.includes('/reel/') ||
               cleanCanonical.includes('/videos/') ||
-              (cleanCanonical.includes('/watch') && !effectiveUrl.includes('/videos/')) ||
+              (this.isWatchUrl(cleanCanonical) && !effectiveUrl.includes('/videos/')) ||
               cleanCanonical.includes('/posts/') ||
               cleanCanonical.includes('permalink.php') ||
               cleanCanonical.includes('/video/'))
@@ -1514,20 +1587,44 @@ export class ScraperService implements OnModuleDestroy {
         try {
           const isReel =
             effectiveUrl.includes('/reel/') ||
-            effectiveUrl.includes('/share/r') ||
-            effectiveUrl.includes('/share/v');
+            effectiveUrl.includes('/share/r');
 
           const domData = await page.evaluate((isReel) => {
             const parseNum = (t: string | null | undefined): number => {
               if (!t) return 0;
-              const m = t.trim().match(/^(\d+([,.]\d+)?)\s*([kmb]|nghìn|triệu)?$/i);
+              const clean = t.trim();
+              if (/(?:bạn|và).*(?:người khác)/i.test(clean) || /(?:others)/i.test(clean)) return 0;
+              const m =
+                clean.match(/([\d.,]+)\s*(triệu|tr|nghìn|ngàn|k|m|b|tỷ|n)(?![\p{L}\p{N}])/iu) ||
+                clean.match(/([\d.,]+)/iu);
               if (!m) return 0;
-              let n = parseFloat(m[1].replace(',', '.'));
-              const u = (m[3] || '').toLowerCase();
-              if (u === 'k' || u === 'nghìn') n *= 1000;
-              if (u === 'm' || u === 'triệu') n *= 1000000;
-              if (u === 'b') n *= 1000000000;
-              return Math.round(n);
+              let numStr = m[1].replace(/\s+/g, '');
+              const unit = (m[2] || '').toLowerCase();
+              if (numStr.includes(',') && numStr.includes('.')) {
+                if (numStr.lastIndexOf(',') > numStr.lastIndexOf('.')) {
+                  numStr = numStr.replace(/\./g, '').replace(',', '.');
+                } else {
+                  numStr = numStr.replace(/,/g, '');
+                }
+              } else if (numStr.includes(',')) {
+                const parts = numStr.split(',');
+                if (parts.length > 2) numStr = numStr.replace(/,/g, '');
+                else if (parts.length === 2) {
+                  if (unit || parts[1].length <= 2) numStr = parts[0] + '.' + parts[1];
+                  else numStr = numStr.replace(/,/g, '');
+                }
+              } else if (numStr.includes('.')) {
+                const parts = numStr.split('.');
+                if (parts.length > 2) numStr = numStr.replace(/\./g, '');
+                else if (parts.length === 2 && !unit && parts[1].length === 3) numStr = numStr.replace(/\./g, '');
+              }
+              const val = parseFloat(numStr);
+              if (isNaN(val)) return 0;
+              let mult = 1;
+              if (['k', 'nghìn', 'ngàn', 'n'].includes(unit)) mult = 1000;
+              else if (['m', 'triệu', 'tr'].includes(unit)) mult = 1000000;
+              else if (['b', 'tỷ'].includes(unit)) mult = 1000000000;
+              return mult > 1 ? Math.round(val * mult) : Math.floor(val);
             };
 
             let author = '';
@@ -1800,11 +1897,18 @@ export class ScraperService implements OnModuleDestroy {
             if (parsed) result.ngayDang = parsed;
           }
           if (domData.containerFound) {
-            result.LuotLike = domData.likes;
-            result.LuotComment = domData.comments;
-            result.SoLuongNguoiShare = domData.shares;
-            if (domData.views > 0) {
-              result.LuotXem = domData.views;
+            result.containerFound = true;
+            if (domData.likes > 0 || !result.LuotLike) {
+              result.LuotLike = domData.likes > 0 ? domData.likes : result.LuotLike;
+            }
+            if (domData.comments > 0 || !result.LuotComment) {
+              result.LuotComment = domData.comments > 0 ? domData.comments : result.LuotComment;
+            }
+            if (domData.shares > 0 || !result.SoLuongNguoiShare) {
+              result.SoLuongNguoiShare = domData.shares > 0 ? domData.shares : result.SoLuongNguoiShare;
+            }
+            if (domData.views > 0 || !result.LuotXem) {
+              result.LuotXem = domData.views > 0 ? domData.views : result.LuotXem;
             }
           }
           if (domData.hasImage) {
@@ -1890,11 +1994,15 @@ export class ScraperService implements OnModuleDestroy {
   public async scrapeVideo(url: string, stt: number = 1): Promise<VideoItem> {
     const sanitizedUrl = this.sanitizeUrl(url);
 
+    // Chọn 1 slot cookie cho cả phiên cào (job-level)
+    const activeCookieSlot = this.cookieService?.getNextActiveCookieSlot ? this.cookieService.getNextActiveCookieSlot() : null;
+    const cookieSlotId = activeCookieSlot ? activeCookieSlot.id : undefined;
+
     // 1. Phân giải các redirect URL (fb.watch, /share/...) trước khi quyết định phương thức crawl
     let finalUrl = sanitizedUrl;
     if (this.isRedirectUrl(sanitizedUrl)) {
       try {
-        finalUrl = await this.resolveFinalUrl(sanitizedUrl);
+        finalUrl = await this.resolveFinalUrl(sanitizedUrl, cookieSlotId);
       } catch {}
     }
 
@@ -1911,7 +2019,7 @@ export class ScraperService implements OnModuleDestroy {
       if (platform === 'tiktok') {
         result = await this.scrapeTikTokHttp(finalUrl, stt);
       } else if (platform === 'facebook') {
-        result = await this.scrapeFacebookHttp(finalUrl, stt);
+        result = await this.scrapeFacebookHttp(finalUrl, stt, 0, cookieSlotId);
       }
     } catch (httpErr: unknown) {
       const msg = httpErr instanceof Error ? httpErr.message : String(httpErr);
@@ -1943,7 +2051,20 @@ export class ScraperService implements OnModuleDestroy {
       `[SCRAPER:FALLBACK] reason=${validation.fallbackReason || 'insufficient_confidence'} missing=[${validation.missingFields.join(',')}] confidence=${validation.confidence} from=http to=playwright url=${finalUrl}`
     );
 
-    const browserResult = await this.scrapeWithBrowser(finalUrl, stt);
+    let browserResult: VideoItem | null = null;
+    try {
+      browserResult = await this.scrapeWithBrowser(finalUrl, stt, cookieSlotId);
+    } catch (browserErr: unknown) {
+      const errMsg = browserErr instanceof Error ? browserErr.message : String(browserErr);
+      this.logger.warn(`[SCRAPER:PLAYWRIGHT_ERROR] url=${finalUrl} error=${errMsg}`);
+      if (result) {
+        result.crawlStatus = 'PARTIAL_SUCCESS';
+        result.fallbackReason = `playwright_failed: ${errMsg}`;
+        return this.finalizeVideoItem(result, finalUrl);
+      }
+      throw browserErr;
+    }
+
     const mergedResult = result ? this.mergeScrapeResults(result, browserResult) : browserResult;
     const browserValidation = this.validateScrapeResult(mergedResult, platform, contentType);
     mergedResult.confidence = browserValidation.confidence;

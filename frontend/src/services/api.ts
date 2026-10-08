@@ -12,6 +12,20 @@ export async function fetchVideos(): Promise<VideoItem[]> {
   return res.json();
 }
 
+export async function fetchVideosGroupedByProfile(): Promise<{
+  profilePostMap: Record<string, VideoItem[]>;
+  otherPosts: VideoItem[];
+}> {
+  const res = await fetch('/api/videos/grouped-by-profile', {
+    headers: { ...getAuthHeaders() },
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || `Lỗi tải danh sách video theo profile: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function addVideo(url: string): Promise<{ success: boolean; data: VideoItem }> {
   const res = await fetch('/api/videos', {
     method: 'POST',

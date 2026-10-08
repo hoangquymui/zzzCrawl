@@ -44,7 +44,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = () => {
 
   // Toast
   const [toast, setToast] = useState<ToastItem | null>(null);
-  const toastTimerRef = useRef<any>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'error') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -62,8 +62,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = () => {
         setConcurrencyMode(data.concurrency.mode || 'custom');
         setConcurrencyCount(data.concurrency.count || 5);
       }
-    } catch (err: any) {
-      showToast(err.message || 'Không thể tải cài đặt hệ thống', 'error');
+    } catch (err: unknown) {
+      showToast((err as Error)?.message || 'Không thể tải cài đặt hệ thống', 'error');
     } finally {
       setIsLoading(false);
     }
@@ -84,8 +84,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = () => {
       const res = await settingsApi.updateInterval(intervalMinutes);
       showToast(res.message || `Đã cập nhật chu kỳ quét thành ${intervalMinutes} phút.`, 'success');
       loadSettings();
-    } catch (err: any) {
-      showToast(err.message || 'Lỗi khi lưu chu kỳ quét', 'error');
+    } catch (err: unknown) {
+      showToast((err as Error)?.message || 'Lỗi khi lưu chu kỳ quét', 'error');
     } finally {
       setIsSavingInterval(false);
     }
@@ -102,8 +102,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = () => {
       const res = await settingsApi.updateConcurrency(concurrencyMode, concurrencyCount);
       showToast(res.message || 'Đã cập nhật số lượng luồng quét!', 'success');
       loadSettings();
-    } catch (err: any) {
-      showToast(err.message || 'Lỗi khi lưu số lượng luồng quét', 'error');
+    } catch (err: unknown) {
+      showToast((err as Error)?.message || 'Lỗi khi lưu số lượng luồng quét', 'error');
     } finally {
       setIsSavingConcurrency(false);
     }
@@ -114,8 +114,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = () => {
       setIsExporting(true);
       await settingsApi.exportDatabase();
       showToast('Đã tải xuống tệp cơ sở dữ liệu SQLite thành công!', 'success');
-    } catch (err: any) {
-      showToast(err.message || 'Lỗi khi xuất cơ sở dữ liệu', 'error');
+    } catch (err: unknown) {
+      showToast((err as Error)?.message || 'Lỗi khi xuất cơ sở dữ liệu', 'error');
     } finally {
       setIsExporting(false);
     }
@@ -136,8 +136,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = () => {
       const res = await settingsApi.importDatabase(file);
       showToast(res.message || 'Đã nhập cơ sở dữ liệu thành công!', 'success');
       loadSettings();
-    } catch (err: any) {
-      showToast(err.message || 'Lỗi khi nhập cơ sở dữ liệu', 'error');
+    } catch (err: unknown) {
+      showToast((err as Error)?.message || 'Lỗi khi nhập cơ sở dữ liệu', 'error');
     } finally {
       setIsImporting(false);
     }

@@ -8,6 +8,9 @@ import { Server, Socket } from 'socket.io';
 import { Logger, forwardRef, Inject } from '@nestjs/common';
 import { VideoItem } from './interfaces/video.interface';
 import { VideosService } from './videos.service';
+import { ScannedPostItem, ProfileScannerProgress } from '../profiles/interfaces/profile-scanner.interface';
+import { UserProfileItem, ProfileCrawlProgress } from '../profiles/interfaces/profile-management.interface';
+import type { CookieSlot } from '../cookies/cookie.service';
 
 @WebSocketGateway({
   cors: {
@@ -77,11 +80,11 @@ export class VideosGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server?.emit('profile_scanner_log', { message, timestamp: new Date().toISOString() });
   }
 
-  public emitProfileScannerFound(post: any): void {
+  public emitProfileScannerFound(post: ScannedPostItem): void {
     this.server?.emit('profile_scanner_found', post);
   }
 
-  public emitProfileScannerProgress(progress: any): void {
+  public emitProfileScannerProgress(progress: ProfileScannerProgress): void {
     this.server?.emit('profile_scanner_progress', progress);
   }
 
@@ -93,11 +96,11 @@ export class VideosGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server?.emit('profile_mgmt_log', { message, timestamp: new Date().toISOString() });
   }
 
-  public emitProfileMgmtItem(item: any): void {
+  public emitProfileMgmtItem(item: UserProfileItem): void {
     this.server?.emit('profile_mgmt_item', item);
   }
 
-  public emitProfileMgmtProgress(progress: any): void {
+  public emitProfileMgmtProgress(progress: ProfileCrawlProgress): void {
     this.server?.emit('profile_mgmt_progress', progress);
   }
 
@@ -109,7 +112,7 @@ export class VideosGateway implements OnGatewayConnection, OnGatewayDisconnect {
     slotId: number;
     status: 'OPENING' | 'WAITING_LOGIN' | 'SUCCESS' | 'ERROR' | 'CANCELLED';
     message: string;
-    slot?: any;
+    slot?: CookieSlot;
     error?: string;
   }): void {
     this.server?.emit('cookie_login_status', {

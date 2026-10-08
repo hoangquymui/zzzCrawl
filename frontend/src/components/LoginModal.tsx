@@ -25,8 +25,8 @@ export const LoginModal: React.FC = () => {
       await login(username.trim(), password.trim());
       setUsername('');
       setPassword('');
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Tài khoản hoặc mật khẩu không chính xác.');
+    } catch (err: unknown) {
+      setErrorMsg((err as Error)?.message || 'Tài khoản hoặc mật khẩu không chính xác.');
     } finally {
       setIsSubmitting(false);
     }
@@ -41,8 +41,8 @@ export const LoginModal: React.FC = () => {
       await login(u, p);
       setUsername('');
       setPassword('');
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Đăng nhập thất bại.');
+    } catch (err: unknown) {
+      setErrorMsg((err as Error)?.message || 'Đăng nhập thất bại.');
     } finally {
       setIsSubmitting(false);
     }

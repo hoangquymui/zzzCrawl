@@ -1,5 +1,5 @@
 import { Injectable, Logger, Inject, forwardRef, BadRequestException, OnModuleInit } from '@nestjs/common';
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { chromium, Browser, BrowserContext, Page, Response } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -11,10 +11,11 @@ import {
 import { VideosGateway } from '../videos/videos.gateway';
 import { ScraperService } from '../scraper/scraper.service';
 import { DatabaseService } from '../database/database.service';
-import { CookieService } from '../cookies/cookie.service';
+import { CookieService, ParsedCookieItem } from '../cookies/cookie.service';
 import { checkCaptionViolation } from '../vocabulary/utils/profanity-checker';
+import { isBoilerplateCaption } from '../scraper/utils/text-normalizer';
 import { ProfileBrowserManager } from './services/profile-browser-manager';
-import { ProfileDomParser } from './services/profile-dom-parser';
+import { ProfileDomParser, ExtractedGraphQLStory } from './services/profile-dom-parser';
 import { ProfileTimelineScroller } from './services/profile-timeline-scroller';
 
 @Injectable()
@@ -69,16 +70,16 @@ export class ProfileScannerService implements OnModuleInit {
           );
         }
       }
-    } catch (err: any) {
-      this.logger.warn(`[ProfileScanner] Lỗi phục hồi trạng thái từ SQLite: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`[ProfileScanner] Lỗi phục hồi trạng thái từ SQLite: ${(err as Error)?.message}`);
     }
   }
 
   public persistState(): void {
     try {
       this.db.setSetting('profile_scanner_state', JSON.stringify(this.state));
-    } catch (err: any) {
-      this.logger.warn(`[ProfileScanner] Lỗi lưu trạng thái vào SQLite: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`[ProfileScanner] Lỗi lưu trạng thái vào SQLite: ${(err as Error)?.message}`);
     }
   }
 
@@ -99,7 +100,7 @@ export class ProfileScannerService implements OnModuleInit {
     return dataPath;
   }
 
-  public loadCookies(): any[] {
+  public loadCookies(): ParsedCookieItem[] {
     if (this.cookieService) {
       return this.cookieService.loadCookies();
     }
@@ -113,9 +114,9 @@ export class ProfileScannerService implements OnModuleInit {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
-          .filter((c) => c && c.name && c.value)
+          .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === 'object' && 'name' in c && 'value' in c))
           .map((c) => {
-            let domain = c.domain || '.facebook.com';
+            let domain = (c.domain as string) || '.facebook.com';
             if (!domain.includes('facebook.com')) {
               domain = '.facebook.com';
             }
@@ -126,11 +127,11 @@ export class ProfileScannerService implements OnModuleInit {
               else if (s === 'strict') sameSite = 'Strict';
               else if (s === 'none' || s === 'no_restriction') sameSite = 'None';
             }
-            const item: any = {
+            const item: ParsedCookieItem = {
               name: String(c.name).trim(),
               value: String(c.value).trim(),
               domain,
-              path: c.path || '/',
+              path: (c.path as string) || '/',
             };
             if (sameSite) {
               item.sameSite = sameSite;
@@ -167,7 +168,7 @@ export class ProfileScannerService implements OnModuleInit {
           path: '/',
         };
       })
-      .filter(Boolean);
+      .filter((c): c is ParsedCookieItem => c !== null);
   }
 
   public getConfig(): ProfileScanConfig {
@@ -282,7 +283,7 @@ export class ProfileScannerService implements OnModuleInit {
       this.addLog('[HỆ THỐNG] Đang kiểm tra cookie trước khi quét...');
       await this.cookieService.validateCookieForCrawl(true);
       this.addLog('[HỆ THỐNG] Cookie hợp lệ, bắt đầu chuẩn bị phiên quét.');
-    } catch (err: any) {
+    } catch (err: unknown) {
       this.addLog('[LỖI] Cookie hết hạn! Vui lòng cập nhật Cookie mới.');
       this.videosGateway.emitProfileScannerLog('[LỖI] Cookie hết hạn');
       this.state.status = 'ERROR';
@@ -314,8 +315,9 @@ export class ProfileScannerService implements OnModuleInit {
     (async () => {
       try {
         await this.runScanProcess(urls, maxScrolls, startDate, endDate);
-      } catch (err: any) {
-        this.addLog(`[LỖI QUÉT] ${err?.message || String(err)}`);
+      } catch (err: unknown) {
+        const errMsg = (err as Error)?.message || String(err);
+        this.addLog(`[LỖI QUÉT] ${errMsg}`);
         this.state.status = 'ERROR';
         this.videosGateway.emitProfileScannerStatus('ERROR');
       } finally {
@@ -423,22 +425,9 @@ export class ProfileScannerService implements OnModuleInit {
         this.videosGateway.emitProfileScannerProgress(this.state.progress);
 
         const page: Page = await context.newPage();
-        let res: any;
+        let res: Response | null = null;
 
-        const capturedGraphQLStories: Array<{
-          permalink_url: string;
-          msg: string;
-          author: string;
-          authorId: string;
-          isShared: boolean;
-          attachedReelUrl: string;
-          attachedVideoId: string;
-          attachedAuthor: string;
-          creation_time: number;
-          reaction_count: number;
-          comment_count: number;
-          share_count: number;
-        }> = [];
+        const capturedGraphQLStories: ExtractedGraphQLStory[] = [];
 
         page.on('response', async (response) => {
           const u = response.url();
@@ -516,8 +505,8 @@ export class ProfileScannerService implements OnModuleInit {
             if (matchedProf && matchedProf.name && matchedProf.name.trim()) {
               profileOwnerName = matchedProf.name.trim();
             }
-          } catch (e: any) {
-            this.logger.warn(`Lỗi tra cứu profile trong SQLite: ${e?.message}`);
+          } catch (e: unknown) {
+            this.logger.warn(`Lỗi tra cứu profile trong SQLite: ${(e as Error)?.message}`);
           }
 
           if (!profileOwnerName) {
@@ -786,6 +775,7 @@ export class ProfileScannerService implements OnModuleInit {
               // every non-video post on its own rendered permalink before deciding
               // between text-only, image, and shared post types.
               if (
+                scraped.crawlSource !== 'playwright' &&
                 !scraped.hasImage &&
                 scraped.loai !== 'Facebook Reel' &&
                 scraped.loai !== 'Facebook Video'
@@ -794,11 +784,11 @@ export class ProfileScannerService implements OnModuleInit {
                 scraped = {
                   ...scraped,
                   caption: (!scraped.caption || scraped.caption === 'Không có tiêu đề') ? (rendered.caption || scraped.caption) : scraped.caption,
-                  hasImage: rendered.hasImage === true,
-                  isShared: rendered.isShared === true,
-                  LuotLike: rendered.LuotLike || scraped.LuotLike,
-                  LuotComment: rendered.LuotComment || scraped.LuotComment,
-                  SoLuongNguoiShare: rendered.SoLuongNguoiShare || scraped.SoLuongNguoiShare,
+                  hasImage: scraped.hasImage || rendered.hasImage === true,
+                  isShared: scraped.isShared ? true : rendered.isShared === true,
+                  LuotLike: rendered.LuotLike > 0 ? rendered.LuotLike : scraped.LuotLike,
+                  LuotComment: rendered.LuotComment > 0 ? rendered.LuotComment : scraped.LuotComment,
+                  SoLuongNguoiShare: rendered.SoLuongNguoiShare > 0 ? rendered.SoLuongNguoiShare : scraped.SoLuongNguoiShare,
                 };
               }
 
@@ -867,7 +857,13 @@ export class ProfileScannerService implements OnModuleInit {
               }
 
               const caption = scraped.caption || '';
-              const violation = checkCaptionViolation(caption);
+              const shouldCheckViolation =
+                Boolean(caption) &&
+                caption.trim() !== 'Không có tiêu đề' &&
+                !isBoilerplateCaption(caption);
+              const violation = shouldCheckViolation
+                ? checkCaptionViolation(caption)
+                : { isViolation: false, reason: '' };
 
               const postItem: ScannedPostItem = this.sanitizeScannedPost({
                 id: `post_${finalUrl}`,
@@ -922,12 +918,14 @@ export class ProfileScannerService implements OnModuleInit {
                 matchedCount: this.state.matchedCount,
               };
               this.videosGateway.emitProfileScannerProgress(this.state.progress);
-            } catch (crawlErr: any) {
-              this.addLog(`  [Lỗi cào ${item.url}]: ${crawlErr?.message || String(crawlErr)}`);
+            } catch (crawlErr: unknown) {
+              const errMsg = (crawlErr as Error)?.message || String(crawlErr);
+              this.addLog(`  [Lỗi cào ${item.url}]: ${errMsg}`);
             }
           }
-        } catch (profErr: any) {
-          this.addLog(`[LỖI PROFILE] ${profileUrl}: ${profErr?.message || String(profErr)}`);
+        } catch (profErr: unknown) {
+          const errMsg = (profErr as Error)?.message || String(profErr);
+          this.addLog(`[LỖI PROFILE] ${profileUrl}: ${errMsg}`);
         } finally {
           await page.close();
         }
@@ -1032,7 +1030,7 @@ export class ProfileScannerService implements OnModuleInit {
   // ========================================================
   // SUB-SERVICE DELEGATIONS FOR BACKWARD COMPATIBILITY
   // ========================================================
-  public extractTimelineLinksAndTypes(page: any) {
+  public extractTimelineLinksAndTypes(page: Page) {
     return this.domParser.extractTimelineLinksAndTypes(page);
   }
 
@@ -1048,7 +1046,7 @@ export class ProfileScannerService implements OnModuleInit {
     return this.domParser.isPostPermalink(url);
   }
 
-  public parseFacebookDate(raw: any) {
+  public parseFacebookDate(raw: unknown) {
     return this.domParser.parseFacebookDate(raw);
   }
 

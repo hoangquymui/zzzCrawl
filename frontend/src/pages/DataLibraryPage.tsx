@@ -285,7 +285,7 @@ export const DataLibraryPage: React.FC<DataLibraryPageProps> = ({
           <select
             value={statusFilter}
             onChange={(e) => {
-              setStatusFilter(e.target.value as any);
+              setStatusFilter(e.target.value as 'all' | 'violation' | 'clean');
               setGridPage(1);
             }}
             className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950/80 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"

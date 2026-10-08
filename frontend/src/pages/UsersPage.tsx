@@ -43,8 +43,8 @@ export const UsersPage: React.FC = () => {
     try {
       const data = await authApi.getUsers();
       setUsers(data);
-    } catch (err: any) {
-      setError(err.message || 'Không thể tải danh sách tài khoản.');
+    } catch (err: unknown) {
+      setError((err as Error)?.message || 'Không thể tải danh sách tài khoản.');
       // Fallback danh sách mặc định nếu chưa có kết nối
       setUsers([
         { id: 'usr_admin_01', username: 'admin', name: 'Quản trị viên', role: 'admin' },
@@ -102,8 +102,8 @@ export const UsersPage: React.FC = () => {
       setNewPassword('');
 
       setTimeout(() => setSuccessMessage(null), 4000);
-    } catch (err: any) {
-      setModalError(err.message || 'Có lỗi xảy ra khi tạo tài khoản.');
+    } catch (err: unknown) {
+      setModalError((err as Error)?.message || 'Có lỗi xảy ra khi tạo tài khoản.');
     } finally {
       setIsSubmitting(false);
     }
@@ -125,8 +125,8 @@ export const UsersPage: React.FC = () => {
       setUsers((prev) => prev.filter((u) => u.id !== userToDelete.id));
       setSuccessMessage(`Đã xoá tài khoản "${userToDelete.username}".`);
       setTimeout(() => setSuccessMessage(null), 4000);
-    } catch (err: any) {
-      alert(err.message || 'Không thể xoá tài khoản này.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Không thể xoá tài khoản này.');
     }
   };
 

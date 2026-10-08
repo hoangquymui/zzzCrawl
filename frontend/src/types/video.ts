@@ -21,6 +21,8 @@ export interface VideoItem {
   isViolation?: boolean;
   violationReason?: string;
   violationKeywords?: string[];
+  profileId?: string;
+  profileName?: string;
 }
 
 export interface DailyStat {

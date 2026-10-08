@@ -23,6 +23,14 @@ export class VideosController {
     return this.videosService.getVideos();
   }
 
+  @Get('grouped-by-profile')
+  public getGroupedByProfile(): {
+    profilePostMap: Record<string, VideoItem[]>;
+    otherPosts: VideoItem[];
+  } {
+    return this.videosService.getVideosGroupedByProfile();
+  }
+
   @Post()
   @UseGuards(RolesGuard)
   @Roles('admin')

@@ -82,8 +82,8 @@ export const VocabularyPage: React.FC = () => {
       const data = await vocabularyApi.getVocabulary();
       setRules(data.rules || []);
       setStats(data.stats || null);
-    } catch (err: any) {
-      setError(err.message || 'Không thể tải danh sách từ vựng.');
+    } catch (err: unknown) {
+      setError((err as Error)?.message || 'Không thể tải danh sách từ vựng.');
     } finally {
       setIsLoading(false);
     }
@@ -117,8 +117,8 @@ export const VocabularyPage: React.FC = () => {
       showToast(`Đã thêm từ "${word}" thành công!`);
       setNewWordsInput((prev) => ({ ...prev, [categoryKey]: '' }));
       loadData();
-    } catch (err: any) {
-      alert(err.message || 'Lỗi thêm từ ngữ.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi thêm từ ngữ.');
     }
   };
 
@@ -129,8 +129,8 @@ export const VocabularyPage: React.FC = () => {
       await vocabularyApi.removeWord(categoryKey, word);
       showToast(`Đã xóa từ "${word}".`);
       loadData();
-    } catch (err: any) {
-      alert(err.message || 'Lỗi xóa từ.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi xóa từ.');
     }
   };
 
@@ -142,8 +142,8 @@ export const VocabularyPage: React.FC = () => {
         prev.map((r) => (r.id === categoryKey || r.category === categoryKey ? { ...r, enabled: res.enabled } : r))
       );
       showToast(res.enabled ? 'Đã bật nhóm quy tắc.' : 'Đã tắt nhóm quy tắc.');
-    } catch (err: any) {
-      alert(err.message || 'Lỗi bật/tắt nhóm quy tắc.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi bật/tắt nhóm quy tắc.');
     }
   };
 
@@ -154,8 +154,8 @@ export const VocabularyPage: React.FC = () => {
       await vocabularyApi.deleteCategory(categoryKey);
       showToast(`Đã xóa nhóm quy tắc "${catName}".`);
       loadData();
-    } catch (err: any) {
-      alert(err.message || 'Lỗi xóa nhóm.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi xóa nhóm.');
     }
   };
 
@@ -175,8 +175,8 @@ export const VocabularyPage: React.FC = () => {
       setNewCatName('');
       setNewCatDesc('');
       loadData();
-    } catch (err: any) {
-      alert(err.message || 'Lỗi tạo nhóm.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi tạo nhóm.');
     }
   };
 
@@ -188,8 +188,8 @@ export const VocabularyPage: React.FC = () => {
       const json = await vocabularyApi.getRawJson();
       setRawJsonText(json);
       setIsJsonModalOpen(true);
-    } catch (err: any) {
-      alert(err.message || 'Không thể lấy dữ liệu JSON.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Không thể lấy dữ liệu JSON.');
     }
   };
 
@@ -202,8 +202,8 @@ export const VocabularyPage: React.FC = () => {
       showToast('Đã cập nhật file JSON quy tắc vi phạm thành công!');
       setIsJsonModalOpen(false);
       loadData();
-    } catch (err: any) {
-      setJsonError(err.message || 'Lỗi cập nhật JSON.');
+    } catch (err: unknown) {
+      setJsonError((err as Error)?.message || 'Lỗi cập nhật JSON.');
     } finally {
       setIsSavingJson(false);
     }
@@ -223,8 +223,8 @@ export const VocabularyPage: React.FC = () => {
     try {
       const res = await vocabularyApi.testCaption(testText);
       setTestResult(res);
-    } catch (err: any) {
-      alert(err.message || 'Lỗi kiểm tra mẫu.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi kiểm tra mẫu.');
     } finally {
       setIsTesting(false);
     }
@@ -244,8 +244,8 @@ export const VocabularyPage: React.FC = () => {
         `Đã quét xong ${res.totalScanned} bài viết: Phát hiện ${res.violationCount} bài vi phạm (+${res.newlyFlagged} mới, -${res.newlyCleared} bỏ gắn cờ).`
       );
       loadData();
-    } catch (err: any) {
-      alert(err.message || 'Lỗi quét lại bài viết.');
+    } catch (err: unknown) {
+      alert((err as Error)?.message || 'Lỗi quét lại bài viết.');
     } finally {
       setIsRescanning(false);
     }
@@ -753,7 +753,7 @@ export const VocabularyPage: React.FC = () => {
                 </label>
                 <select
                   value={newCatSeverity}
-                  onChange={(e) => setNewCatSeverity(e.target.value as any)}
+                  onChange={(e) => setNewCatSeverity(e.target.value as 'HIGH' | 'MEDIUM' | 'LOW')}
                   className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-hidden"
                 >
                   <option value="HIGH">Nghiêm trọng (HIGH)</option>

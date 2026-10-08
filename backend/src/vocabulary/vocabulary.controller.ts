@@ -9,7 +9,8 @@ import {
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
-import { VocabularyService } from './vocabulary.service';
+import { VocabularyService, VocabularyStats } from './vocabulary.service';
+import { ViolationRule, ViolationResult } from './utils/profanity-checker';
 import { RolesGuard, Roles } from '../auth/roles.guard';
 
 @Controller('vocabulary')
@@ -19,7 +20,7 @@ export class VocabularyController {
   constructor(private readonly vocabularyService: VocabularyService) {}
 
   @Get()
-  public getVocabulary(): { rules: any[]; stats: any } {
+  public getVocabulary(): { rules: ViolationRule[]; stats: VocabularyStats } {
     return {
       rules: this.vocabularyService.getRules(),
       stats: this.vocabularyService.getStats(),
@@ -27,7 +28,7 @@ export class VocabularyController {
   }
 
   @Get('stats')
-  public getStats(): any {
+  public getStats(): VocabularyStats {
     return this.vocabularyService.getStats();
   }
 
@@ -54,7 +55,7 @@ export class VocabularyController {
   @Post('category')
   public addCategory(
     @Body() body: { name: string; description?: string; severity?: 'HIGH' | 'MEDIUM' | 'LOW' }
-  ): { success: boolean; message: string; rule?: any } {
+  ): { success: boolean; message: string; rule?: ViolationRule } {
     if (!body || !body.name) {
       throw new BadRequestException('Tên nhóm không được để trống.');
     }
@@ -99,12 +100,17 @@ export class VocabularyController {
   @Post('test')
   public testCaption(
     @Body() body: { caption: string }
-  ): any {
+  ): ViolationResult {
     return this.vocabularyService.testCaption(body?.caption || '');
   }
 
   @Post('rescan')
-  public rescan(): any {
+  public rescan(): {
+    totalScanned: number;
+    violationCount: number;
+    newlyFlagged: number;
+    newlyCleared: number;
+  } {
     return this.vocabularyService.rescanAllVideos();
   }
 }

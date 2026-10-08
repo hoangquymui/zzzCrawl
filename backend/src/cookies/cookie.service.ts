@@ -12,6 +12,17 @@ import { chromium, Browser, BrowserContext } from 'playwright';
 import { DatabaseService } from '../database/database.service';
 import { VideosGateway } from '../videos/videos.gateway';
 
+export interface ParsedCookieItem {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+  httpOnly?: boolean;
+  secure?: boolean;
+  expires?: number;
+}
+
 export interface CookieCheckResult {
   isValid: boolean;
   status: 'VALID' | 'EXPIRED' | 'MISSING' | 'ERROR';
@@ -106,7 +117,7 @@ export class CookieService implements OnModuleInit {
   /**
    * Phân tích chuỗi cookie (JSON hoặc header string) ra mảng Playwright cookie
    */
-  public parseCookiesFromRaw(rawCookie: string): any[] {
+  public parseCookiesFromRaw(rawCookie: string): ParsedCookieItem[] {
     const raw = (rawCookie || '').trim();
     if (!raw || raw === '[]' || raw === '{}') return [];
 
@@ -114,9 +125,9 @@ export class CookieService implements OnModuleInit {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed
-          .filter((c) => c && c.name && c.value)
+          .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === 'object' && 'name' in c && 'value' in c))
           .map((c) => {
-            let domain = c.domain || '.facebook.com';
+            let domain = (c.domain as string) || '.facebook.com';
             if (!domain.includes('facebook.com')) {
               domain = '.facebook.com';
             }
@@ -127,20 +138,33 @@ export class CookieService implements OnModuleInit {
               else if (s === 'strict') sameSite = 'Strict';
               else if (s === 'none' || s === 'no_restriction') sameSite = 'None';
             }
-            const item: any = {
+            const item: ParsedCookieItem = {
               name: String(c.name).trim(),
               value: String(c.value).trim(),
               domain,
-              path: c.path || '/',
+              path: (c.path as string) || '/',
             };
             if (sameSite) item.sameSite = sameSite;
             if (typeof c.httpOnly === 'boolean') item.httpOnly = c.httpOnly;
             if (typeof c.secure === 'boolean') item.secure = c.secure;
-            if (typeof c.expires === 'number' && c.expires > 0) {
-              item.expires = Math.floor(c.expires);
+            const exp =
+              typeof c.expires === 'number' && c.expires > 0
+                ? c.expires
+                : typeof (c as Record<string, unknown>).expirationDate === 'number' &&
+                  ((c as Record<string, unknown>).expirationDate as number) > 0
+                ? ((c as Record<string, unknown>).expirationDate as number)
+                : undefined;
+            if (exp !== undefined) {
+              const expSec = Math.floor(exp);
+              const nowSec = Math.floor(Date.now() / 1000);
+              if (expSec < nowSec) {
+                return null;
+              }
+              item.expires = expSec;
             }
             return item;
-          });
+          })
+          .filter((c): c is ParsedCookieItem => c !== null);
       }
     } catch {
       // Chuỗi dạng name=val; name2=val2
@@ -160,13 +184,13 @@ export class CookieService implements OnModuleInit {
           path: '/',
         };
       })
-      .filter(Boolean);
+      .filter((c): c is ParsedCookieItem => c !== null);
   }
 
   /**
    * Trích xuất các trường cookie quan trọng (c_user, xs, fr, datr)
    */
-  public extractDetectedCookies(cookies: any[]): CookieSlot['detectedCookies'] {
+  public extractDetectedCookies(cookies: ParsedCookieItem[]): CookieSlot['detectedCookies'] {
     const detected: CookieSlot['detectedCookies'] = {};
     if (!Array.isArray(cookies)) return detected;
     for (const c of cookies) {
@@ -263,8 +287,8 @@ export class CookieService implements OnModuleInit {
       if (activeSlot && activeSlot.rawCookie) {
         this.db.saveCookie(activeSlot.rawCookie);
       }
-    } catch (err: any) {
-      this.logger.warn(`[CookieService] Không thể đồng bộ tệp cookies.json: ${err?.message}`);
+    } catch (err: unknown) {
+      this.logger.warn(`[CookieService] Không thể đồng bộ tệp cookies.json: ${(err as Error)?.message}`);
     }
   }
 
@@ -426,8 +450,17 @@ export class CookieService implements OnModuleInit {
    * Trả về mảng cookies cho trình duyệt Playwright hoặc HTTP fetch.
    * Tự động luân phiên Round-Robin qua các Cookie đang BẬT!
    */
-  public loadCookies(): any[] {
-    const activeSlot = this.getNextActiveCookieSlot();
+  public loadCookies(slotId?: number): ParsedCookieItem[] {
+    let activeSlot: CookieSlot | null = null;
+    if (typeof slotId === 'number' && slotId >= 1 && slotId <= 5) {
+      const slots = this.initSlots();
+      activeSlot = slots.find((s) => s.id === slotId && s.enabled && s.rawCookie && s.cookieCount > 0) || null;
+    }
+
+    if (!activeSlot) {
+      activeSlot = this.getNextActiveCookieSlot();
+    }
+
     if (activeSlot && activeSlot.rawCookie) {
       const parsed = this.parseCookiesFromRaw(activeSlot.rawCookie);
       if (parsed.length > 0) return parsed;
@@ -456,8 +489,8 @@ export class CookieService implements OnModuleInit {
   /**
    * Trả về chuỗi Header Cookie luân phiên
    */
-  public getCookieString(): string {
-    const cookies = this.loadCookies();
+  public getCookieString(slotId?: number): string {
+    const cookies = this.loadCookies(slotId);
     if (!cookies || cookies.length === 0) return '';
     const essential = ['c_user', 'xs', 'datr', 'fr', 'sb'];
     return cookies
@@ -501,7 +534,7 @@ export class CookieService implements OnModuleInit {
    * Đường nhanh: kiểm tra phiên đăng nhập bằng HTTPS Request (không mở trình duyệt, ~1s).
    */
   private async checkCookieValidityHttp(
-    cookies: any[],
+    cookies: ParsedCookieItem[],
     cUser: string
   ): Promise<CookieCheckResult | null> {
     try {
@@ -556,9 +589,9 @@ export class CookieService implements OnModuleInit {
       }
 
       return null;
-    } catch (err: any) {
+    } catch (err: unknown) {
       this.logger.warn(
-        `[CookieService] Kiểm tra qua HTTPS Request không thành công, chuyển sang trình duyệt: ${err?.message}`
+        `[CookieService] Kiểm tra qua HTTPS Request không thành công, chuyển sang trình duyệt: ${(err as Error)?.message}`
       );
       return null;
     }
@@ -698,12 +731,13 @@ export class CookieService implements OnModuleInit {
 
       this.updateSlotLastCheck(slotId, res);
       return res;
-    } catch (err: any) {
-      this.logger.error(`Lỗi kiểm tra Cookie ${slotId}: ${err?.message || String(err)}`);
+    } catch (err: unknown) {
+      const errMsg = (err as Error)?.message || String(err);
+      this.logger.error(`Lỗi kiểm tra Cookie ${slotId}: ${errMsg}`);
       const res: CookieCheckResult = {
         isValid: false,
         status: 'ERROR',
-        message: `Lỗi kết nối khi kiểm tra Cookie ${slotId}: ${err?.message || String(err)}`,
+        message: `Lỗi kết nối khi kiểm tra Cookie ${slotId}: ${errMsg}`,
         checkedAt: new Date().toISOString(),
       };
       this.updateSlotLastCheck(slotId, res);
@@ -859,19 +893,20 @@ export class CookieService implements OnModuleInit {
         success: true,
         message: `Đã mở cửa sổ trình duyệt đăng nhập cho ${slot.name}. Vui lòng đăng nhập trên cửa sổ Chrome vừa xuất hiện.`,
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (browser) {
         await browser.close().catch(() => {});
       }
       this.activeLoginSessions.delete(id);
-      this.logger.error(`[CookieService] Lỗi khi mở trình duyệt đăng nhập: ${err?.message}`);
+      const errMsg = (err as Error)?.message || String(err);
+      this.logger.error(`[CookieService] Lỗi khi mở trình duyệt đăng nhập: ${errMsg}`);
       this.videosGateway?.emitCookieLoginEvent({
         slotId: id,
         status: 'ERROR',
-        message: `Không thể mở trình duyệt: ${err?.message}`,
-        error: err?.message,
+        message: `Không thể mở trình duyệt: ${errMsg}`,
+        error: errMsg,
       });
-      throw new BadRequestException(`Không thể mở trình duyệt: ${err?.message}`);
+      throw new BadRequestException(`Không thể mở trình duyệt: ${errMsg}`);
     }
   }
 
@@ -978,9 +1013,10 @@ export class CookieService implements OnModuleInit {
             }
           }, 1200);
         }
-      } catch (err: any) {
-        if (err?.message?.includes('Target page, context or browser has been closed') ||
-            err?.message?.includes('Browser has been closed')) {
+      } catch (err: unknown) {
+        const errMsg = (err as Error)?.message || '';
+        if (errMsg.includes('Target page, context or browser has been closed') ||
+            errMsg.includes('Browser has been closed')) {
           clearInterval(intervalId);
           sessionObj.isClosed = true;
           this.activeLoginSessions.delete(slotId);

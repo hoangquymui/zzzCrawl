@@ -20,6 +20,13 @@ import { DatabaseService } from '../database/database.service';
 import { VideosService } from '../videos/videos.service';
 import { UpdateIntervalDto, UpdateConcurrencyDto } from './dto/settings.dto';
 
+interface UploadedMulterFile {
+  buffer: Buffer;
+  originalname?: string;
+  mimetype?: string;
+  size?: number;
+}
+
 @Controller('settings')
 @UseGuards(RolesGuard)
 export class SettingsController {
@@ -81,7 +88,7 @@ export class SettingsController {
   @Roles('admin')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(FileInterceptor('file'))
-  public importDatabase(@UploadedFile() file: any) {
+  public importDatabase(@UploadedFile() file?: UploadedMulterFile) {
     if (!file || !file.buffer) {
       throw new BadRequestException('Vui lòng chọn tệp SQLite (.sqlite hoặc .db) để tải lên.');
     }
@@ -94,8 +101,8 @@ export class SettingsController {
         message: 'Đã nhập cơ sở dữ liệu SQLite thành công!',
         database: this.databaseService.getDatabaseStats(),
       };
-    } catch (err: any) {
-      throw new BadRequestException(err.message || 'Lỗi khi nhập cơ sở dữ liệu.');
+    } catch (err: unknown) {
+      throw new BadRequestException((err as Error)?.message || 'Lỗi khi nhập cơ sở dữ liệu.');
     }
   }
 }

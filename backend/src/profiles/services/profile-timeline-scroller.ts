@@ -21,8 +21,8 @@ export class ProfileTimelineScroller {
         newHeight,
         grew: newHeight > prevHeight,
       };
-    } catch (err: any) {
-      this.logger.debug(`Lỗi cuộn trang: ${err?.message || String(err)}`);
+    } catch (err: unknown) {
+      this.logger.debug(`Lỗi cuộn trang: ${err instanceof Error ? err.message : String(err)}`);
       return { previousHeight: 0, newHeight: 0, grew: false };
     }
   }
