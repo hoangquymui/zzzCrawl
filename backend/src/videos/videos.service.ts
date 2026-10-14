@@ -140,30 +140,66 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
   }
 
   public annotateVideo(video: VideoItem): void {
-    if (!video.profileId) {
-      try {
-        const profiles = this.profileManagementService.listProfiles();
-        const resolved = resolveProfileForVideo(video, profiles);
-        if (resolved.profileId) {
-          video.profileId = resolved.profileId;
-          video.profileName = resolved.profileName;
+    if (video.profileMatchedBy === 'manual') return;
+
+    const shouldRecompute =
+      !video.profileId ||
+      video.profileMatchedBy === 'name' ||
+      video.profileMatchedBy === undefined;
+
+    if (!shouldRecompute) return;
+
+    try {
+      const profiles = this.profileManagementService.listProfiles();
+      const resolved = resolveProfileForVideo(video, profiles);
+      if (resolved.profileId) {
+        video.profileId = resolved.profileId;
+        video.profileName = resolved.profileName;
+        video.profileMatchedBy = resolved.matchedBy;
+      } else {
+        if (video.profileMatchedBy === 'name') {
+          delete video.profileId;
+          delete video.profileName;
+          delete video.profileMatchedBy;
         }
-      } catch {}
-    }
+      }
+    } catch {}
   }
 
   public annotateVideosWithProfiles(): void {
     try {
       const profiles = this.profileManagementService.listProfiles();
       if (!profiles || profiles.length === 0) return;
+      let unconfirmedLegacyCount = 0;
+
       for (const v of this.trackedVideos) {
-        if (!v.profileId) {
-          const resolved = resolveProfileForVideo(v, profiles);
-          if (resolved.profileId) {
-            v.profileId = resolved.profileId;
-            v.profileName = resolved.profileName;
+        if (v.profileMatchedBy === 'manual') continue;
+
+        const shouldRecompute =
+          !v.profileId ||
+          v.profileMatchedBy === 'name' ||
+          v.profileMatchedBy === undefined;
+
+        if (!shouldRecompute) continue;
+
+        const resolved = resolveProfileForVideo(v, profiles);
+        if (resolved.profileId) {
+          v.profileId = resolved.profileId;
+          v.profileName = resolved.profileName;
+          v.profileMatchedBy = resolved.matchedBy;
+        } else {
+          if (v.profileMatchedBy === 'name') {
+            delete v.profileId;
+            delete v.profileName;
+            delete v.profileMatchedBy;
+          } else if (v.profileId && v.profileMatchedBy === undefined) {
+            unconfirmedLegacyCount++;
           }
         }
+      }
+
+      if (unconfirmedLegacyCount > 0) {
+        this.logger.log(`${unconfirmedLegacyCount} video giữ profile cũ chưa xác nhận được`);
       }
     } catch {}
   }
@@ -308,6 +344,10 @@ export class VideosService implements OnModuleInit, OnModuleDestroy {
       if (authorProfile) {
         data.profileId = authorProfile.id;
         data.profileName = authorProfile.name;
+        if (!data.profileMatchedBy) {
+          const resolved = resolveProfileForVideo(data, [authorProfile]);
+          data.profileMatchedBy = resolved.matchedBy || 'uid';
+        }
         if (!data.authorUid && authorProfile.uid) {
           data.authorUid = authorProfile.uid;
         }

@@ -75,4 +75,50 @@ describe('Nhóm 3 — merge-refresh', () => {
     expect(baseOld).toEqual(oldCopy);
     expect(fresh).toEqual(freshCopy);
   });
+
+  it('fresh.LuotXem=0, old=1500 -> giữ 1500; fresh=1200 -> 1200', () => {
+    const freshZero: VideoItem = {
+      ...baseOld,
+      LuotXem: 0,
+    };
+    expect(mergeRefreshedVideo(baseOld, freshZero).LuotXem).toBe(1500);
+
+    const fresh1200: VideoItem = {
+      ...baseOld,
+      LuotXem: 1200,
+    };
+    expect(mergeRefreshedVideo(baseOld, fresh1200).LuotXem).toBe(1200);
+  });
+
+  it('isShared: old=true, fresh playwright false -> false; old=true, fresh http false -> true; old=false, fresh http true -> true', () => {
+    const oldShared: VideoItem = {
+      ...baseOld,
+      isShared: true,
+    };
+
+    const freshPwFalse: VideoItem = {
+      ...baseOld,
+      crawlSource: 'playwright',
+      isShared: false,
+    };
+    expect(mergeRefreshedVideo(oldShared, freshPwFalse).isShared).toBe(false);
+
+    const freshHttpFalse: VideoItem = {
+      ...baseOld,
+      crawlSource: 'http',
+      isShared: false,
+    };
+    expect(mergeRefreshedVideo(oldShared, freshHttpFalse).isShared).toBe(true);
+
+    const oldNotShared: VideoItem = {
+      ...baseOld,
+      isShared: false,
+    };
+    const freshHttpTrue: VideoItem = {
+      ...baseOld,
+      crawlSource: 'http',
+      isShared: true,
+    };
+    expect(mergeRefreshedVideo(oldNotShared, freshHttpTrue).isShared).toBe(true);
+  });
 });

@@ -189,4 +189,127 @@ describe('Nhóm 8 — Độ bền vận hành', () => {
       expect(mockScraper.scrapeWithBrowser).not.toHaveBeenCalled();
     });
   });
+
+  describe('Mục 5 — Cookie slot pinning & Scanner cookie slot', () => {
+    it('scrapeVideo với link TikTok không gọi getNextActiveCookieSlot; với Facebook gọi đúng 1 lần', async () => {
+      jest.spyOn(scraperService as any, 'scrapeTikTokHttp').mockResolvedValue({
+        id: 'tt-1',
+        link: 'https://www.tiktok.com/@user/video/123',
+        caption: 'TikTok caption',
+        loai: 'TikTok Video',
+        nguoiDang: 'user',
+        ngayDang: '2026-01-01',
+        LuotXem: 100,
+        LuotLike: 10,
+        LuotComment: 1,
+        SoLuongNguoiShare: 0,
+      });
+
+      await scraperService.scrapeVideo('https://www.tiktok.com/@user/video/123');
+      expect(mockCookieService.getNextActiveCookieSlot).not.toHaveBeenCalled();
+
+      jest.spyOn(scraperService as any, 'scrapeFacebookHttp').mockResolvedValue({
+        id: 'fb-1',
+        link: 'https://www.facebook.com/watch/?v=123',
+        caption: 'FB caption',
+        loai: 'Facebook Video',
+        nguoiDang: 'user',
+        ngayDang: '2026-01-01',
+        LuotXem: 100,
+        LuotLike: 10,
+        LuotComment: 1,
+        SoLuongNguoiShare: 0,
+      });
+
+      await scraperService.scrapeVideo('https://www.facebook.com/watch/?v=123');
+      expect(mockCookieService.getNextActiveCookieSlot).toHaveBeenCalledTimes(1);
+    });
+
+    it('với link Facebook: loadCookies của resolveFinalUrl, scrapeFacebookHttp và scrapeWithBrowser đều nhận CÙNG một slotId', async () => {
+      mockCookieService.getNextActiveCookieSlot = jest.fn().mockReturnValue({ id: 42, name: 'Slot 42' });
+      const receivedSlotIds: (number | undefined)[] = [];
+
+      jest.spyOn(scraperService as any, 'isRedirectUrl').mockReturnValue(true);
+      jest.spyOn(scraperService as any, 'resolveFinalUrl').mockImplementation(async (url: string, slotId?: number) => {
+        receivedSlotIds.push(slotId);
+        return url;
+      });
+      jest.spyOn(scraperService as any, 'scrapeFacebookHttp').mockImplementation(async (url: string, stt?: number, retry?: number, slotId?: number) => {
+        receivedSlotIds.push(slotId);
+        return {
+          id: 'fb-1',
+          link: url,
+          caption: 'cap',
+          loai: 'Facebook Video',
+          nguoiDang: 'author',
+          ngayDang: '2026-01-01',
+          LuotXem: 0, // 0 metrics triggers fallback
+          LuotLike: 0,
+          LuotComment: 0,
+          SoLuongNguoiShare: 0,
+        };
+      });
+      jest.spyOn(scraperService as any, 'scrapeWithBrowser').mockImplementation(async (url: string, stt?: number, slotId?: number) => {
+        receivedSlotIds.push(slotId);
+        return {
+          id: 'fb-1',
+          link: url,
+          caption: 'cap',
+          loai: 'Facebook Video',
+          nguoiDang: 'author',
+          ngayDang: '2026-01-01',
+          LuotXem: 100,
+          LuotLike: 10,
+          LuotComment: 1,
+          SoLuongNguoiShare: 0,
+        };
+      });
+
+      await scraperService.scrapeVideo('https://www.facebook.com/watch/?v=123');
+
+      expect(receivedSlotIds).toHaveLength(3);
+      expect(receivedSlotIds[0]).toBe(42);
+      expect(receivedSlotIds[1]).toBe(42);
+      expect(receivedSlotIds[2]).toBe(42);
+    });
+
+    it('scanner: một bài non-video không ảnh gọi scrapeVideo và scrapeWithBrowser với cùng slotId', async () => {
+      const mockScraper = {
+        pickCookieSlotId: jest.fn().mockReturnValue(7),
+        scrapeVideo: jest.fn().mockResolvedValue({
+          id: 'fb-post-1',
+          link: 'https://www.facebook.com/permalink.php?story_fbid=123',
+          caption: 'Nội dung bài viết chữ',
+          loai: 'Facebook Post',
+          hasImage: false,
+          crawlSource: 'http',
+          LuotLike: 10,
+        }),
+        scrapeWithBrowser: jest.fn().mockResolvedValue({
+          id: 'fb-post-1',
+          caption: 'Nội dung bài viết chữ',
+          hasImage: false,
+          isShared: false,
+          LuotLike: 10,
+          LuotComment: 0,
+          SoLuongNguoiShare: 0,
+        }),
+      };
+
+      const crawlUrl = 'https://www.facebook.com/permalink.php?story_fbid=123';
+      const slotId = mockScraper.pickCookieSlotId(crawlUrl);
+      let scraped = await mockScraper.scrapeVideo(crawlUrl, undefined, slotId);
+      if (
+        scraped.crawlSource !== 'playwright' &&
+        !scraped.hasImage &&
+        scraped.loai !== 'Facebook Reel' &&
+        scraped.loai !== 'Facebook Video'
+      ) {
+        await mockScraper.scrapeWithBrowser(crawlUrl, 1, slotId);
+      }
+
+      expect(mockScraper.scrapeVideo).toHaveBeenCalledWith(crawlUrl, undefined, 7);
+      expect(mockScraper.scrapeWithBrowser).toHaveBeenCalledWith(crawlUrl, 1, 7);
+    });
+  });
 });

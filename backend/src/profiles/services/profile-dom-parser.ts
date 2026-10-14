@@ -862,6 +862,7 @@ export class ProfileDomParser {
     const excludedFirstSegments = new Set([
       'hashtag',
       'login',
+      'login.php',
       'sharer.php',
       'recover',
       'messages',
@@ -874,14 +875,6 @@ export class ProfileDomParser {
     ]);
 
     if (segments.length > 0 && excludedFirstSegments.has(segments[0])) {
-      return false;
-    }
-
-    if (
-      pathname.includes('/login') ||
-      pathname.includes('/sharer.php') ||
-      pathname.includes('/recover/')
-    ) {
       return false;
     }
 
@@ -948,148 +941,6 @@ export class ProfileDomParser {
       return { dateObj: null, timestamp: 0, formatted: 'Gần đây' };
     }
     return res;
-  }
-
-  private _oldParseFacebookDate(raw: unknown): { dateObj: Date | null; timestamp: number; formatted: string } {
-    if (!raw) return { dateObj: null, timestamp: 0, formatted: 'Gần đây' };
-
-    if (typeof raw === 'number' || /^\d{9,13}$/.test(String(raw).trim())) {
-      let num = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
-      if (num > 100000000000) num = Math.floor(num / 1000);
-      const d = new Date(num * 1000);
-      if (!isNaN(d.getTime())) {
-        return {
-          dateObj: d,
-          timestamp: d.getTime(),
-          formatted: this.formatDate(d),
-        };
-      }
-    }
-
-    const str = String(raw).trim();
-    const now = new Date();
-
-    if (/^(vừa xong|vừa|mới đây|gần đây|just now|today|hôm nay)$/i.test(str)) {
-      return {
-        dateObj: now,
-        timestamp: now.getTime(),
-        formatted: this.formatDate(now),
-      };
-    }
-
-    const mMin = str.match(/(\d+)\s*(?:phút|mins?|m\b)/i);
-    if (mMin) {
-      const d = new Date(now.getTime() - parseInt(mMin[1], 10) * 60 * 1000);
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mHour = str.match(/(\d+)\s*(?:giờ|hours?|h\b)/i);
-    if (mHour) {
-      const d = new Date(now.getTime() - parseInt(mHour[1], 10) * 3600 * 1000);
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mYesterday = str.match(/(?:hôm qua|yesterday)(?:\s*(?:lúc|at)?\s*(\d{1,2}):(\d{2}))?/i);
-    if (mYesterday) {
-      const d = new Date(now.getTime() - 86400 * 1000);
-      if (mYesterday[1] && mYesterday[2]) {
-        d.setHours(parseInt(mYesterday[1], 10), parseInt(mYesterday[2], 10), 0, 0);
-      }
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mDay = str.match(/(\d+)\s*(?:ngày|days?|d\b)/i);
-    if (mDay) {
-      const d = new Date(now.getTime() - parseInt(mDay[1], 10) * 86400 * 1000);
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mWeek = str.match(/(\d+)\s*(?:tuần|weeks?|w\b)/i);
-    if (mWeek) {
-      const d = new Date(now.getTime() - parseInt(mWeek[1], 10) * 7 * 86400 * 1000);
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mMonth = str.match(/(\d+)\s*(?:tháng|months?)\s*(?:trước|ago)?$/i);
-    if (mMonth && !str.includes('lúc')) {
-      const d = new Date(now.getTime() - parseInt(mMonth[1], 10) * 30 * 86400 * 1000);
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mYear = str.match(/(\d+)\s*(?:năm|years?)\s*(?:trước|ago)?$/i);
-    if (mYear && !str.includes('lúc')) {
-      const d = new Date(now.getTime() - parseInt(mYear[1], 10) * 365 * 86400 * 1000);
-      return { dateObj: d, timestamp: d.getTime(), formatted: `${this.formatDate(d)} (${str})` };
-    }
-
-    const mVnDate = str.match(/(\d{1,2})\s+tháng\s+(\d{1,2})(?:[,\s]+(\d{4}))?(?:\s*(?:lúc|at)?\s*(\d{1,2}):(\d{2}))?/i);
-    if (mVnDate) {
-      const day = parseInt(mVnDate[1], 10);
-      const month = parseInt(mVnDate[2], 10) - 1;
-      let year = mVnDate[3] ? parseInt(mVnDate[3], 10) : now.getFullYear();
-      if (!mVnDate[3] && month > now.getMonth()) {
-        year -= 1;
-      }
-      const hasTime = Boolean(mVnDate[4]);
-      const hour = hasTime ? parseInt(mVnDate[4], 10) : 0;
-      const min = hasTime ? parseInt(mVnDate[5], 10) : 0;
-      const d = new Date(year, month, day, hour, min, 0);
-      return {
-        dateObj: d,
-        timestamp: d.getTime(),
-        formatted: hasTime ? this.formatDate(d) : this.formatDate(d, false),
-      };
-    }
-
-    const mStd = str.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2}))?/);
-    if (mStd) {
-      const hasTime = Boolean(mStd[4]);
-      const d = new Date(
-        parseInt(mStd[1], 10),
-        parseInt(mStd[2], 10) - 1,
-        parseInt(mStd[3], 10),
-        hasTime ? parseInt(mStd[4], 10) : 0,
-        hasTime ? parseInt(mStd[5], 10) : 0,
-        0
-      );
-      return { dateObj: d, timestamp: d.getTime(), formatted: hasTime ? this.formatDate(d) : this.formatDate(d, false) };
-    }
-    const mDmy = str.match(/(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:[ T]+(\d{1,2}):(\d{2}))?/);
-    if (mDmy) {
-      const hasTime = Boolean(mDmy[4]);
-      const d = new Date(
-        parseInt(mDmy[3], 10),
-        parseInt(mDmy[2], 10) - 1,
-        parseInt(mDmy[1], 10),
-        hasTime ? parseInt(mDmy[4], 10) : 0,
-        hasTime ? parseInt(mDmy[5], 10) : 0,
-        0
-      );
-      return { dateObj: d, timestamp: d.getTime(), formatted: hasTime ? this.formatDate(d) : this.formatDate(d, false) };
-    }
-
-    const enMonths: Record<string, number> = {
-      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-      jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
-    };
-    const mEn = str.match(/([a-zA-Z]{3,9})\s+(\d{1,2})(?:[,\s]+(\d{4}))?/i);
-    if (mEn) {
-      const mStr = mEn[1].slice(0, 3).toLowerCase();
-      if (enMonths[mStr] !== undefined) {
-        const month = enMonths[mStr];
-        const day = parseInt(mEn[2], 10);
-        const year = mEn[3] ? parseInt(mEn[3], 10) : now.getFullYear();
-        const d = new Date(year, month, day);
-        return { dateObj: d, timestamp: d.getTime(), formatted: this.formatDate(d, false) };
-      }
-    }
-
-    const d = new Date(str);
-    if (!isNaN(d.getTime())) {
-      return { dateObj: d, timestamp: d.getTime(), formatted: this.formatDate(d) };
-    }
-
-    return { dateObj: null, timestamp: 0, formatted: str };
   }
 
   public formatDate(d: Date, includeTime = true): string {

@@ -750,6 +750,7 @@ export class ProfileScannerService implements OnModuleInit {
           const seenCanonicalUrls = new Set<string>();
           let consecutiveOldPosts = 0;
           let crawledCount = 0;
+          let unparseableDateCount = 0;
 
           for (const item of uniqueItemList) {
             if (this.currentCancelFlag) break;
@@ -767,8 +768,10 @@ export class ProfileScannerService implements OnModuleInit {
             crawledCount++;
 
             try {
+              // Chọn slot cookie 1 lần duy nhất cho mỗi bài viết
+              const slotId = this.scraperService.pickCookieSlotId(crawlUrl);
               // Sử dụng chính logic crawl của trang dữ liệu (ScraperService.scrapeVideo)
-              let scraped = await this.scraperService.scrapeVideo(crawlUrl);
+              let scraped = await this.scraperService.scrapeVideo(crawlUrl, undefined, slotId);
               if (!scraped) continue;
 
               // HTTP often omits the attachment tree for Facebook posts. Verify
@@ -780,7 +783,7 @@ export class ProfileScannerService implements OnModuleInit {
                 scraped.loai !== 'Facebook Reel' &&
                 scraped.loai !== 'Facebook Video'
               ) {
-                const rendered = await this.scraperService.scrapeWithBrowser(crawlUrl);
+                const rendered = await this.scraperService.scrapeWithBrowser(crawlUrl, 1, slotId);
                 scraped = {
                   ...scraped,
                   caption: (!scraped.caption || scraped.caption === 'Không có tiêu đề') ? (rendered.caption || scraped.caption) : scraped.caption,
@@ -803,6 +806,15 @@ export class ProfileScannerService implements OnModuleInit {
               const dateInfo = scraped.ngayDang
                 ? this.domParser.parseFacebookDate(scraped.ngayDang)
                 : { formatted: 'Gần đây', timestamp: 0 };
+
+              const hasDateFilter = Boolean(startTimestamp || endTimestamp);
+              if (hasDateFilter && (!dateInfo.timestamp || dateInfo.timestamp === 0)) {
+                unparseableDateCount++;
+                this.addLog(
+                  `  [BỎ QUA - KHÔNG XÁC ĐỊNH ĐƯỢC NGÀY] [${scraped.loai || item.loai}] Link: ${finalUrl}`
+                );
+                continue;
+              }
 
               const inRange = this.domParser.isDateInRange(dateInfo.timestamp, startTimestamp, endTimestamp);
               if (!inRange) {
@@ -922,6 +934,10 @@ export class ProfileScannerService implements OnModuleInit {
               const errMsg = (crawlErr as Error)?.message || String(crawlErr);
               this.addLog(`  [Lỗi cào ${item.url}]: ${errMsg}`);
             }
+          }
+
+          if (Boolean(startTimestamp || endTimestamp)) {
+            this.addLog(`${unparseableDateCount} bài bị bỏ qua do không xác định được ngày`);
           }
         } catch (profErr: unknown) {
           const errMsg = (profErr as Error)?.message || String(profErr);

@@ -30,14 +30,20 @@ export function normalizeNameForMatching(name: string): string {
 
 /**
  * Lọc lấy các từ mang tính nhận diện đặc thù (loại trừ các từ thông dụng cơ quan/hành chính)
+ * 1. Tách theo cụm: gỡ "công an" và "an ninh trật tự" như một đơn vị trước khi lọc từng từ.
+ * 2. Loại các từ hành chính đơn (phường, xã, thị, trấn, quận, huyện, thành, phố, tỉnh, tp, đội, phòng, ban).
+ * 3. KHÔNG loại riêng lẻ các từ công, an, ninh, trật, tự.
  */
 export function getDistinctiveTokens(norm: string): string[] {
-  const common = new Set([
-    'công', 'an', 'ninh', 'trật', 'tự',
+  if (!norm) return [];
+  let s = norm.replace(/\ban ninh trật tự\b/gi, ' ');
+  s = s.replace(/\bcông an\b/gi, ' ');
+
+  const adminWords = new Set([
     'phường', 'xã', 'thị', 'trấn', 'quận', 'huyện', 'thành', 'phố', 'tỉnh', 'tp',
     'đội', 'phòng', 'ban'
   ]);
-  return norm.split(' ').filter((w) => w && !common.has(w));
+  return s.split(' ').filter((w) => w && !adminWords.has(w));
 }
 
 /**
@@ -146,25 +152,16 @@ export function matchProfile(post: VideoItem, profile: UserProfileItem): MatchPr
     const authorTokens = getDistinctiveTokens(normAuthor);
     const nameTokens = getDistinctiveTokens(normName);
 
-    // Chỉ khớp khi cả 2 bên đều có token đặc trưng
+    // Chỉ khớp khi chuỗi chuẩn hóa bằng nhau hoặc TẬP token đặc trưng giống hệt nhau (cả hai khác rỗng). Bỏ quy tắc tập con.
     if (authorTokens.length > 0 && nameTokens.length > 0) {
       const setA = new Set(authorTokens);
       const setB = new Set(nameTokens);
 
       const isIdentical =
-        authorTokens.length === nameTokens.length &&
-        authorTokens.every((t) => setB.has(t));
+        setA.size === setB.size &&
+        Array.from(setA).every((t) => setB.has(t));
 
       if (isIdentical) {
-        return { matched: true, by: 'name' };
-      }
-
-      const isASubsetOfB = authorTokens.every((t) => setB.has(t));
-      const isBSubsetOfA = nameTokens.every((t) => setA.has(t));
-      const smallerLen = Math.min(authorTokens.length, nameTokens.length);
-
-      // Một tập là tập con của tập kia VÀ tập nhỏ có >= 2 token đặc trưng
-      if ((isASubsetOfB || isBSubsetOfA) && smallerLen >= 2) {
         return { matched: true, by: 'name' };
       }
     }
@@ -240,12 +237,38 @@ export function groupVideosByProfile(
   const otherPosts: VideoItem[] = [];
 
   for (const video of videos) {
-    // Nếu chưa match hoặc match trước đó chỉ dựa vào name -> cho phép tính lại để tìm match mạnh hơn (uid/url/slug)
-    const resolved = resolveProfileForVideo(video, profiles);
-    let matchedId = resolved.profileId || video.profileId;
-    if (resolved.profileId) {
-      video.profileId = resolved.profileId;
-      video.profileName = resolved.profileName;
+    if (video.profileMatchedBy === 'manual') {
+      const matchedId = video.profileId;
+      if (matchedId && profilePostMap[matchedId]) {
+        profilePostMap[matchedId].push(video);
+      } else {
+        otherPosts.push(video);
+      }
+      continue;
+    }
+
+    const shouldRecompute =
+      !video.profileId ||
+      video.profileMatchedBy === 'name' ||
+      video.profileMatchedBy === undefined;
+
+    let matchedId = video.profileId;
+
+    if (shouldRecompute) {
+      const resolved = resolveProfileForVideo(video, profiles);
+      if (resolved.profileId) {
+        video.profileId = resolved.profileId;
+        video.profileName = resolved.profileName;
+        video.profileMatchedBy = resolved.matchedBy;
+        matchedId = resolved.profileId;
+      } else {
+        if (video.profileMatchedBy === 'name') {
+          delete video.profileId;
+          delete video.profileName;
+          delete video.profileMatchedBy;
+          matchedId = undefined;
+        }
+      }
     }
 
     if (matchedId && profilePostMap[matchedId]) {

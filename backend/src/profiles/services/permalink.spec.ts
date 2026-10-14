@@ -19,4 +19,10 @@ describe('Nhóm 7 — permalink.spec.ts', () => {
     expect(parser.isPostPermalink('https://www.facebook.com/privacy/policy')).toBe(false);
     expect(parser.isPostPermalink('https://www.facebook.com/login/')).toBe(false);
   });
+
+  it('phân biệt segment bắt đầu login/sharer với slug chứa chữ login (như loginhue)', () => {
+    expect(parser.isPostPermalink('https://www.facebook.com/loginhue/posts/1234567890')).toBe(true);
+    expect(parser.isPostPermalink('https://www.facebook.com/login/?next=x')).toBe(false);
+    expect(parser.isPostPermalink('https://www.facebook.com/sharer.php?u=x')).toBe(false);
+  });
 });

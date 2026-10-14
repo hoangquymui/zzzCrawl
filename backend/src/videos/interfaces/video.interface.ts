@@ -26,9 +26,9 @@ export interface VideoItem {
   confidence?: number;
   fallbackReason?: string;
   missingFields?: string[];
-  containerFound?: boolean;
   profileId?: string;
   profileName?: string;
+  profileMatchedBy?: 'uid' | 'url' | 'slug' | 'name' | 'manual';
 }
 
 export interface CrawlStatusEvent {

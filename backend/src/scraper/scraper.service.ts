@@ -23,6 +23,7 @@ import {
 } from './utils/url-cleaner';
 import { validateScrapeResult, ScrapeValidation } from './utils/scrape-validator';
 import { mergeScrapeResults as mergeScrapeResultsFn } from './utils/merge-scrape';
+import { mergeDomCounts } from './utils/merge-dom';
 import { parseDateUnified } from './utils/date-parser';
 
 @Injectable()
@@ -96,168 +97,6 @@ export class ScraperService implements OnModuleDestroy {
    */
   public parseAnyDate(raw?: unknown, referenceNow?: Date): string {
     return parseDateUnified(raw, referenceNow).formatted;
-  }
-
-  private _oldParseAnyDate(raw?: unknown): string {
-    if (!raw) return '';
-    const str = String(raw).trim();
-    if (!str) return '';
-
-    // 1. Unix timestamp (9-13 chữ số)
-    if (/^\d{9,13}$/.test(str)) {
-      return this.formatTimestamp(str);
-    }
-
-    // 2. ISO 8601: 2026-09-05T02:57:26.000Z hoặc kèm timezone
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(str)) {
-      const d = new Date(str);
-      if (!isNaN(d.getTime())) {
-        const pad = (n: number) => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-      }
-    }
-
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const fmt = (d: Date) =>
-      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-
-    // 3. Ngày tương đối: vừa xong, vừa, mới đây, gần đây, just now
-    if (/^(vừa xong|vừa|mới đây|gần đây|just now)$/i.test(str)) {
-      return fmt(now);
-    }
-
-    const mMin = str.match(/(\d+)\s*(?:phút|mins?|m\b)/i);
-    if (mMin) {
-      const d = new Date(now.getTime() - parseInt(mMin[1], 10) * 60 * 1000);
-      return fmt(d);
-    }
-
-    const mHour = str.match(/(\d+)\s*(?:giờ|hours?|h\b)/i);
-    if (mHour) {
-      const d = new Date(now.getTime() - parseInt(mHour[1], 10) * 3600 * 1000);
-      return fmt(d);
-    }
-
-    const mYesterday = str.match(/(?:hôm qua|yesterday)(?:\s*(?:lúc|at)?\s*(\d{1,2}):(\d{2}))?/i);
-    if (mYesterday) {
-      const d = new Date(now.getTime() - 86400 * 1000);
-      if (mYesterday[1] && mYesterday[2]) {
-        d.setHours(parseInt(mYesterday[1], 10), parseInt(mYesterday[2], 10), 0, 0);
-      }
-      return fmt(d);
-    }
-
-    const mDay = str.match(/(\d+)\s*(?:ngày|days?|d\b)/i);
-    if (mDay) {
-      const d = new Date(now.getTime() - parseInt(mDay[1], 10) * 86400 * 1000);
-      return fmt(d);
-    }
-
-    // 4. Ngày tuyệt đối tiếng Việt: "5 tháng 9, 2026 lúc 09:57" hoặc "5 tháng 9 lúc 09:57" hoặc "5 Tháng 9"
-    const mVnDate = str.match(
-      /(\d{1,2})\s+tháng\s+(\d{1,2})(?:[,\s]+(\d{4}))?(?:\s*(?:lúc|at)?\s*(\d{1,2}):(\d{2}))?/i
-    );
-    if (mVnDate) {
-      const day = parseInt(mVnDate[1], 10);
-      const month = parseInt(mVnDate[2], 10) - 1;
-      let year = mVnDate[3] ? parseInt(mVnDate[3], 10) : now.getFullYear();
-      if (!mVnDate[3] && month > now.getMonth()) {
-        year -= 1;
-      }
-      const hasTime = Boolean(mVnDate[4]);
-      const hour = hasTime ? parseInt(mVnDate[4], 10) : 0;
-      const min = hasTime ? parseInt(mVnDate[5], 10) : 0;
-      const d = new Date(year, month, day, hour, min, 0);
-      return fmt(d);
-    }
-
-    // 4b. Ngày tuyệt đối tiếng Anh: "Friday 25 September 2026 at 15:43" hoặc "September 25, 2026 at 3:43 PM"
-    const monthMap: Record<string, number> = {
-      january: 0, jan: 0,
-      february: 1, feb: 1,
-      march: 2, mar: 2,
-      april: 3, apr: 3,
-      may: 4,
-      june: 5, jun: 5,
-      july: 6, jul: 6,
-      august: 7, aug: 7,
-      september: 8, sep: 8, sept: 8,
-      october: 9, oct: 9,
-      november: 10, nov: 10,
-      december: 11, dec: 11,
-    };
-
-    const mEngDateA = str.match(
-      /(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+)?(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)(?:[,\s]+(\d{4}))?(?:\s*(?:at|lúc)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(am|pm))?)?/i
-    );
-    if (mEngDateA) {
-      const day = parseInt(mEngDateA[1], 10);
-      const mName = mEngDateA[2].toLowerCase();
-      const month = monthMap[mName] !== undefined ? monthMap[mName] : 0;
-      let year = mEngDateA[3] ? parseInt(mEngDateA[3], 10) : now.getFullYear();
-      if (!mEngDateA[3] && month > now.getMonth()) {
-        year -= 1;
-      }
-      let hour = mEngDateA[4] ? parseInt(mEngDateA[4], 10) : 0;
-      const min = mEngDateA[5] ? parseInt(mEngDateA[5], 10) : 0;
-      const sec = mEngDateA[6] ? parseInt(mEngDateA[6], 10) : 0;
-      const ampm = mEngDateA[7] ? mEngDateA[7].toLowerCase() : '';
-      if (ampm === 'pm' && hour < 12) hour += 12;
-      if (ampm === 'am' && hour === 12) hour = 0;
-      const d = new Date(year, month, day, hour, min, sec);
-      return fmt(d);
-    }
-
-    const mEngDateB = str.match(
-      /(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,\s]+)?(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{1,2})(?:[,\s]+(\d{4}))?(?:\s*(?:at|lúc)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(am|pm))?)?/i
-    );
-    if (mEngDateB) {
-      const mName = mEngDateB[1].toLowerCase();
-      const month = monthMap[mName] !== undefined ? monthMap[mName] : 0;
-      const day = parseInt(mEngDateB[2], 10);
-      let year = mEngDateB[3] ? parseInt(mEngDateB[3], 10) : now.getFullYear();
-      if (!mEngDateB[3] && month > now.getMonth()) {
-        year -= 1;
-      }
-      let hour = mEngDateB[4] ? parseInt(mEngDateB[4], 10) : 0;
-      const min = mEngDateB[5] ? parseInt(mEngDateB[5], 10) : 0;
-      const sec = mEngDateB[6] ? parseInt(mEngDateB[6], 10) : 0;
-      const ampm = mEngDateB[7] ? mEngDateB[7].toLowerCase() : '';
-      if (ampm === 'pm' && hour < 12) hour += 12;
-      if (ampm === 'am' && hour === 12) hour = 0;
-      const d = new Date(year, month, day, hour, min, sec);
-      return fmt(d);
-    }
-
-    // 5. Chuẩn YYYY-MM-DD hoặc DD/MM/YYYY
-    const mStd = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-    if (mStd) {
-      const d = new Date(
-        parseInt(mStd[1], 10),
-        parseInt(mStd[2], 10) - 1,
-        parseInt(mStd[3], 10),
-        mStd[4] ? parseInt(mStd[4], 10) : 0,
-        mStd[5] ? parseInt(mStd[5], 10) : 0,
-        mStd[6] ? parseInt(mStd[6], 10) : 0
-      );
-      return fmt(d);
-    }
-
-    const mDmy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-    if (mDmy) {
-      const d = new Date(
-        parseInt(mDmy[3], 10),
-        parseInt(mDmy[2], 10) - 1,
-        parseInt(mDmy[1], 10),
-        mDmy[4] ? parseInt(mDmy[4], 10) : 0,
-        mDmy[5] ? parseInt(mDmy[5], 10) : 0,
-        mDmy[6] ? parseInt(mDmy[6], 10) : 0
-      );
-      return fmt(d);
-    }
-
-    return '';
   }
 
   /**
@@ -1568,7 +1407,7 @@ export class ScraperService implements OnModuleDestroy {
       } catch {}
 
       const html = await page.content();
-      const result = isTikTok
+      let result = isTikTok
         ? this.parseTikTokHtml(html, effectiveUrl, stt)
         : await this.parseFacebookHtml(html, effectiveUrl, stt);
 
@@ -1590,55 +1429,17 @@ export class ScraperService implements OnModuleDestroy {
             effectiveUrl.includes('/share/r');
 
           const domData = await page.evaluate((isReel) => {
-            const parseNum = (t: string | null | undefined): number => {
-              if (!t) return 0;
-              const clean = t.trim();
-              if (/(?:bạn|và).*(?:người khác)/i.test(clean) || /(?:others)/i.test(clean)) return 0;
-              const m =
-                clean.match(/([\d.,]+)\s*(triệu|tr|nghìn|ngàn|k|m|b|tỷ|n)(?![\p{L}\p{N}])/iu) ||
-                clean.match(/([\d.,]+)/iu);
-              if (!m) return 0;
-              let numStr = m[1].replace(/\s+/g, '');
-              const unit = (m[2] || '').toLowerCase();
-              if (numStr.includes(',') && numStr.includes('.')) {
-                if (numStr.lastIndexOf(',') > numStr.lastIndexOf('.')) {
-                  numStr = numStr.replace(/\./g, '').replace(',', '.');
-                } else {
-                  numStr = numStr.replace(/,/g, '');
-                }
-              } else if (numStr.includes(',')) {
-                const parts = numStr.split(',');
-                if (parts.length > 2) numStr = numStr.replace(/,/g, '');
-                else if (parts.length === 2) {
-                  if (unit || parts[1].length <= 2) numStr = parts[0] + '.' + parts[1];
-                  else numStr = numStr.replace(/,/g, '');
-                }
-              } else if (numStr.includes('.')) {
-                const parts = numStr.split('.');
-                if (parts.length > 2) numStr = numStr.replace(/\./g, '');
-                else if (parts.length === 2 && !unit && parts[1].length === 3) numStr = numStr.replace(/\./g, '');
-              }
-              const val = parseFloat(numStr);
-              if (isNaN(val)) return 0;
-              let mult = 1;
-              if (['k', 'nghìn', 'ngàn', 'n'].includes(unit)) mult = 1000;
-              else if (['m', 'triệu', 'tr'].includes(unit)) mult = 1000000;
-              else if (['b', 'tỷ'].includes(unit)) mult = 1000000000;
-              return mult > 1 ? Math.round(val * mult) : Math.floor(val);
-            };
-
             let author = '';
             let caption = '';
-            let likes = 0;
-            let comments = 0;
-            let shares = 0;
-            let views = 0;
+            const likes: string[] = [];
+            const comments: string[] = [];
+            const shares: string[] = [];
+            const views: string[] = [];
             let hasImage = false;
             let isShared = false;
             let originalAuthor = '';
             let originalPostUrl = '';
             let dateStr = '';
-            let containerFound = false;
 
             if (isReel) {
               // --- SCOPED REEL EXTRACTION ---
@@ -1678,10 +1479,15 @@ export class ScraperService implements OnModuleDestroy {
               });
 
               if (likeBtn) {
-                containerFound = true;
-                likes = parseNum(likeBtn.textContent);
-                const mAria = (likeBtn.getAttribute('aria-label') || '').match(/(\d+([,.]\d+)?\s*[kmb]?)/i);
-                if (likes === 0 && mAria) likes = parseNum(mAria[1]);
+                const txt = likeBtn.textContent?.trim() || '';
+                if (txt) likes.push(txt);
+                const aria = likeBtn.getAttribute('aria-label') || '';
+                const mAria = aria.match(/(\d+([,.]\d+)?\s*[kmb]?)/i);
+                if (mAria) {
+                  likes.push(mAria[1]);
+                } else if (aria) {
+                  likes.push(aria);
+                }
 
                 // Tìm cụm action bar duy nhất chứa likeBtn của active reel (tránh quét sang preloaded reels)
                 const actionContainer =
@@ -1693,9 +1499,13 @@ export class ScraperService implements OnModuleDestroy {
                     const aria = (b.getAttribute('aria-label') || '').toLowerCase();
                     const txt = b.textContent?.trim() || '';
                     if (/comment|bình luận/i.test(aria)) {
-                      comments = parseNum(txt);
+                      if (txt) comments.push(txt);
+                      const rawAria = b.getAttribute('aria-label') || '';
+                      if (rawAria) comments.push(rawAria);
                     } else if (/share|chia sẻ/i.test(aria)) {
-                      shares = parseNum(txt);
+                      if (txt) shares.push(txt);
+                      const rawAria = b.getAttribute('aria-label') || '';
+                      if (rawAria) shares.push(rawAria);
                     }
                   }
                 }
@@ -1709,8 +1519,6 @@ export class ScraperService implements OnModuleDestroy {
                 document.querySelector('div[role="article"]');
 
               if (container) {
-                containerFound = true;
-
                 // Tác giả Post
                 const authorEl = container.querySelector(
                   'h2 strong, h3 strong, h2 a, h3 a, [role="heading"] a, [role="heading"] strong, strong'
@@ -1769,11 +1577,17 @@ export class ScraperService implements OnModuleDestroy {
                   '[role="toolbar"], [aria-label*="reacted" i], [aria-label*="bày tỏ" i], [aria-label*="reaction" i]'
                 );
                 if (toolbar) {
-                  likes = parseNum(toolbar.textContent);
+                  const t = toolbar.textContent?.trim() || '';
+                  if (t) likes.push(t);
+                  const aria = toolbar.getAttribute('aria-label') || '';
+                  if (aria) likes.push(aria);
                 }
-                if (likes === 0) {
-                  const likeBtn = container.querySelector('[aria-label="Like" i], [aria-label="Thích" i]');
-                  if (likeBtn) likes = parseNum(likeBtn.textContent);
+                const likeBtn = container.querySelector('[aria-label="Like" i], [aria-label="Thích" i]');
+                if (likeBtn) {
+                  const t = likeBtn.textContent?.trim() || '';
+                  if (t) likes.push(t);
+                  const aria = likeBtn.getAttribute('aria-label') || '';
+                  if (aria) likes.push(aria);
                 }
 
                 // Nút bình luận & chia sẻ bên trong container
@@ -1782,9 +1596,13 @@ export class ScraperService implements OnModuleDestroy {
                   const aria = (b.getAttribute('aria-label') || '').toLowerCase();
                   const txt = b.textContent?.trim() || '';
                   if (/comment|bình luận/i.test(aria)) {
-                    if (txt) comments = parseNum(txt);
+                    if (txt) comments.push(txt);
+                    const rawAria = b.getAttribute('aria-label') || '';
+                    if (rawAria) comments.push(rawAria);
                   } else if (/share|chia sẻ|send this/i.test(aria)) {
-                    if (txt) shares = parseNum(txt);
+                    if (txt) shares.push(txt);
+                    const rawAria = b.getAttribute('aria-label') || '';
+                    if (rawAria) shares.push(rawAria);
                   }
                 }
 
@@ -1792,8 +1610,8 @@ export class ScraperService implements OnModuleDestroy {
                 const visibleComments = container.querySelectorAll(
                   'div[role="article"][aria-label*="comment" i], div[role="article"][aria-label*="bình luận" i]'
                 );
-                if (comments === 0 && visibleComments.length > 0) {
-                  comments = visibleComments.length;
+                if (visibleComments.length > 0) {
+                  comments.push(String(visibleComments.length));
                 }
 
                 // Phân biệt bài viết chia sẻ và tác giả gốc
@@ -1881,7 +1699,6 @@ export class ScraperService implements OnModuleDestroy {
               originalAuthor,
               originalPostUrl,
               dateStr,
-              containerFound,
             };
           }, isReel);
 
@@ -1896,21 +1713,12 @@ export class ScraperService implements OnModuleDestroy {
             const parsed = this.parseAnyDate(domData.dateStr);
             if (parsed) result.ngayDang = parsed;
           }
-          if (domData.containerFound) {
-            result.containerFound = true;
-            if (domData.likes > 0 || !result.LuotLike) {
-              result.LuotLike = domData.likes > 0 ? domData.likes : result.LuotLike;
-            }
-            if (domData.comments > 0 || !result.LuotComment) {
-              result.LuotComment = domData.comments > 0 ? domData.comments : result.LuotComment;
-            }
-            if (domData.shares > 0 || !result.SoLuongNguoiShare) {
-              result.SoLuongNguoiShare = domData.shares > 0 ? domData.shares : result.SoLuongNguoiShare;
-            }
-            if (domData.views > 0 || !result.LuotXem) {
-              result.LuotXem = domData.views > 0 ? domData.views : result.LuotXem;
-            }
-          }
+          result = mergeDomCounts(result, {
+            likes: domData.likes,
+            comments: domData.comments,
+            shares: domData.shares,
+            views: domData.views,
+          });
           if (domData.hasImage) {
             result.hasImage = true;
           }
@@ -1987,16 +1795,36 @@ export class ScraperService implements OnModuleDestroy {
     return item;
   }
 
+  public isFacebookUrl(url: string): boolean {
+    return isFacebookUrl(url);
+  }
+
+  /**
+   * Chọn cookie slot cho URL. Chỉ chọn khi là link Facebook, không chọn cho TikTok.
+   */
+  public pickCookieSlotId(url: string): number | undefined {
+    const sanitizedUrl = this.sanitizeUrl(url);
+    if (!isFacebookUrl(sanitizedUrl)) {
+      return undefined;
+    }
+    const activeCookieSlot = this.cookieService?.getNextActiveCookieSlot
+      ? this.cookieService.getNextActiveCookieSlot()
+      : null;
+    return activeCookieSlot ? activeCookieSlot.id : undefined;
+  }
+
   /**
    * Hàm điều phối chính:
    * INPUT → sanitizeUrl() → resolveRedirects() → detectPlatform/ContentType → HTTP scrape → validation → Playwright fallback → finalize
    */
-  public async scrapeVideo(url: string, stt: number = 1): Promise<VideoItem> {
+  public async scrapeVideo(url: string, stt: number = 1, slotId?: number): Promise<VideoItem> {
     const sanitizedUrl = this.sanitizeUrl(url);
 
-    // Chọn 1 slot cookie cho cả phiên cào (job-level)
-    const activeCookieSlot = this.cookieService?.getNextActiveCookieSlot ? this.cookieService.getNextActiveCookieSlot() : null;
-    const cookieSlotId = activeCookieSlot ? activeCookieSlot.id : undefined;
+    // Chọn 1 slot cookie cho cả phiên cào (job-level) chỉ khi là Facebook và chưa được truyền vào
+    let cookieSlotId: number | undefined = slotId;
+    if (cookieSlotId === undefined && isFacebookUrl(sanitizedUrl)) {
+      cookieSlotId = this.pickCookieSlotId(sanitizedUrl);
+    }
 
     // 1. Phân giải các redirect URL (fb.watch, /share/...) trước khi quyết định phương thức crawl
     let finalUrl = sanitizedUrl;

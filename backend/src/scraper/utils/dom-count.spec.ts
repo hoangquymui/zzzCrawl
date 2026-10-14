@@ -1,4 +1,4 @@
-import { parseDomCount } from './dom-count';
+import { parseDomCount, pickDomCount } from './dom-count';
 
 describe('Nhóm 4 — dom-count', () => {
   it('phân tích chính xác số liệu từ DOM', () => {
@@ -14,4 +14,10 @@ describe('Nhóm 4 — dom-count', () => {
     expect(parseDomCount(null).found).toBe(false);
     expect(parseDomCount(undefined).found).toBe(false);
   });
+
+  it('pickDomCount chọn giá trị hợp lệ đầu tiên > 0', () => {
+    expect(pickDomCount(['', 'Thích', '3,4 Tr'])).toBe(3400000);
+    expect(pickDomCount(['Bạn và 5 người khác'])).toBe(0);
+  });
 });
+

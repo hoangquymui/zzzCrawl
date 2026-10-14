@@ -29,6 +29,18 @@ describe('Nhóm 5 — profile-matcher', () => {
   });
 
   describe('Các trường hợp KHÔNG khớp', () => {
+    it('không khớp "Nguyễn Văn An" vs "Nguyễn Văn An Khang"', () => {
+      const post = createPost({ nguoiDang: 'Nguyễn Văn An' });
+      const profile = createProfile({ name: 'Nguyễn Văn An Khang' });
+      expect(isPostMatchingProfile(post, profile)).toBe(false);
+    });
+
+    it('không khớp "Nguyễn Văn An" vs "Nguyễn Văn"', () => {
+      const post = createPost({ nguoiDang: 'Nguyễn Văn An' });
+      const profile = createProfile({ name: 'Nguyễn Văn' });
+      expect(isPostMatchingProfile(post, profile)).toBe(false);
+    });
+
     it('không khớp "Linh" vs "Linh Chi"', () => {
       const post = createPost({ nguoiDang: 'Linh' });
       const profile = createProfile({ name: 'Linh Chi' });
@@ -92,6 +104,14 @@ describe('Nhóm 5 — profile-matcher', () => {
       const res = matchProfile(post, profile);
       expect(res.matched).toBe(true);
       expect(res.by).toBe('slug');
+    });
+
+    it('khớp theo name: "Phú Hội" vs "Công an phường Phú Hội"', () => {
+      const post = createPost({ nguoiDang: 'Phú Hội' });
+      const profile = createProfile({ name: 'Công an phường Phú Hội' });
+      const res = matchProfile(post, profile);
+      expect(res.matched).toBe(true);
+      expect(res.by).toBe('name');
     });
 
     it('khớp theo name: "Công an phường Phú Hội" vs "Công an phường Phú Hội - TP Huế"', () => {
