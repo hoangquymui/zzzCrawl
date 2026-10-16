@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Delete,
   Body,
   Param,
@@ -86,6 +87,36 @@ export class ProfileManagementController {
   public clearAllProfilesPost() {
     const success = this.profileManagementService.clearProfiles();
     return { success };
+  }
+
+  @Put(':id')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  public updateProfilePut(
+    @Param('id') id: string,
+    @Body() dto: { name?: string; profileUrl?: string; uid?: string; platform?: 'facebook' | 'tiktok'; bio?: string }
+  ) {
+    const updated = this.profileManagementService.updateProfile(id, dto);
+    if (!updated) {
+      throw new BadRequestException('Không tìm thấy profile để cập nhật.');
+    }
+    return { success: true, item: updated };
+  }
+
+  @Post(':id/update')
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @HttpCode(HttpStatus.OK)
+  public updateProfilePost(
+    @Param('id') id: string,
+    @Body() dto: { name?: string; profileUrl?: string; uid?: string; platform?: 'facebook' | 'tiktok'; bio?: string }
+  ) {
+    const updated = this.profileManagementService.updateProfile(id, dto);
+    if (!updated) {
+      throw new BadRequestException('Không tìm thấy profile để cập nhật.');
+    }
+    return { success: true, item: updated };
   }
 
   @Delete(':id')

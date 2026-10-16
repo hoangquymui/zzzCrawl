@@ -1,4 +1,5 @@
 import { VideoItem } from '../../videos/interfaces/video.interface';
+import { isValidAuthor } from './text-normalizer';
 
 /**
  * Hợp nhất kết quả cào từ nhiều nguồn (HTTP, Playwright DOM)
@@ -8,12 +9,20 @@ import { VideoItem } from '../../videos/interfaces/video.interface';
  * 3. isShared chỉ nâng từ false -> true, không hạ từ true -> false.
  */
 export function mergeScrapeResults(base: VideoItem, candidate: VideoItem): VideoItem {
+  const isCandidateAuthorValid = Boolean(candidate.nguoiDang && isValidAuthor(candidate.nguoiDang));
+  const isBaseAuthorValid = Boolean(base.nguoiDang && isValidAuthor(base.nguoiDang));
+  const finalAuthor = isCandidateAuthorValid
+    ? candidate.nguoiDang
+    : isBaseAuthorValid
+    ? base.nguoiDang
+    : candidate.nguoiDang || base.nguoiDang || '';
+
   return {
     ...base,
     ...candidate,
     link: candidate.link || base.link,
     caption: candidate.caption || base.caption,
-    nguoiDang: candidate.nguoiDang || base.nguoiDang,
+    nguoiDang: finalAuthor,
     ngayDang: candidate.ngayDang || base.ngayDang,
     postId: candidate.postId || base.postId,
     authorUid: candidate.authorUid || base.authorUid,

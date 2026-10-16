@@ -794,32 +794,52 @@ export class ScraperService implements OnModuleDestroy {
       }
     }
 
-    // 2c. Bóc tách tác giả từ Relay GraphQL (chỉ lấy owner_as_page, video_owner, actors, owner)
+    // 2c. Bóc tách tác giả từ Relay GraphQL (chỉ lấy owner_as_page, video_owner, actors, owner gắn liền với videoId mục tiêu)
     if (!result.nguoiDang && targetVideoId) {
-      // Ưu tiên tìm owner gần videoId mục tiêu
-      const ownerChunk = this.getChunkAroundVideoId(html, targetVideoId);
-      if (ownerChunk) {
+      // Quét toàn bộ các lần xuất hiện của targetVideoId trong HTML để tìm chunk chứa thông tin chủ bài viết
+      let searchIdx = 0;
+      while ((searchIdx = html.indexOf(targetVideoId, searchIdx)) !== -1) {
+        const start = Math.max(0, searchIdx - 2500);
+        const end = Math.min(html.length, searchIdx + 4500);
+        const chunk = html.slice(start, end);
+
         const mOwnerChunk =
-          ownerChunk.match(/"owner_as_page":\s*\{\s*"name":\s*"([^"]+)"/) ||
-          ownerChunk.match(/"video_owner":\s*\{[^}]*"name":\s*"([^"]+)"/) ||
-          ownerChunk.match(/"owner":\s*\{[^}]*"__typename":\s*"(?:User|Page)"[^}]*"name":\s*"([^"]+)"/);
-        if (mOwnerChunk) result.nguoiDang = this.unescapeHtml(mOwnerChunk[1]);
+          chunk.match(/"owner_as_page":\s*\{\s*"name":\s*"([^"]+)"/) ||
+          chunk.match(/"video_owner":\s*\{[^}]*"name":\s*"([^"]+)"/) ||
+          chunk.match(/"owner":\s*\{[^}]*"__typename":\s*"(?:User|Page)"[^}]*"name":\s*"([^"]+)"/) ||
+          chunk.match(/"actors":\s*\[\s*\{[^}]*"name":\s*"([^"]+)"/);
+
+        if (mOwnerChunk && isValidAuthor(mOwnerChunk[1])) {
+          result.nguoiDang = this.unescapeHtml(mOwnerChunk[1]);
+          if (!result.authorUid) {
+            const mChunkUid =
+              chunk.match(/"video_owner":\s*\{[^}]*"id":\s*"(\d+)"/i) ||
+              chunk.match(/"owner":\s*\{[^}]*"id":\s*"(\d+)"/i) ||
+              chunk.match(/"actors":\s*\[\s*\{[^}]*"id":\s*"(\d+)"/i);
+            if (mChunkUid && mChunkUid[1]) {
+              result.authorUid = mChunkUid[1];
+            }
+          }
+          break;
+        }
+        searchIdx += targetVideoId.length;
       }
     }
 
-    if (!result.nguoiDang) {
+    // Chỉ thực hiện tìm kiếm toàn cục nếu không có targetVideoId (tránh quét nhầm quảng cáo/sponsor/gợi ý trên trang)
+    if (!result.nguoiDang && !targetVideoId) {
       const mOwner =
         html.match(/"owner_as_page":\s*\{\s*"name":\s*"([^"]+)"/) ||
         html.match(/"video_owner":\s*\{\s*"__typename":\s*"(?:User|Page)"[^}]*"name":\s*"([^"]+)"/) ||
         html.match(/"owner":\s*\{[^}]*"__typename":\s*"(?:User|Page)"[^}]*"name":\s*"([^"]+)"/);
-      if (mOwner) result.nguoiDang = this.unescapeHtml(mOwner[1]);
+      if (mOwner && isValidAuthor(mOwner[1])) result.nguoiDang = this.unescapeHtml(mOwner[1]);
     }
 
-    if (!result.nguoiDang) {
+    if (!result.nguoiDang && !targetVideoId) {
       const mActors =
         html.match(/"actors":\s*\[\s*\{\s*"__typename":\s*"(?:User|Page)"[^}]*"name":\s*"([^"]+)"/) ||
         html.match(/"actors":\s*\[\s*\{[^}]*"name":\s*"([^"]+)"/);
-      if (mActors) result.nguoiDang = this.unescapeHtml(mActors[1]);
+      if (mActors && isValidAuthor(mActors[1])) result.nguoiDang = this.unescapeHtml(mActors[1]);
     }
 
     // Giải mã nếu chuỗi còn unicode escaped (\u00e0...)
@@ -835,7 +855,24 @@ export class ScraperService implements OnModuleDestroy {
       result.nguoiDang = result.nguoiDang.replace(/\s+(?:on|trên)\s+reels$/i, '').trim();
     }
 
-    // 2d. Bóc tách authorUid và authorUrl nếu có từ GraphQL
+    // 2d. Bóc tách authorUid và authorUrl nếu có từ GraphQL (ưu tiên scoped theo targetVideoId)
+    if (!result.authorUid && targetVideoId) {
+      let searchIdx = 0;
+      while ((searchIdx = html.indexOf(targetVideoId, searchIdx)) !== -1) {
+        const start = Math.max(0, searchIdx - 2500);
+        const end = Math.min(html.length, searchIdx + 4500);
+        const chunk = html.slice(start, end);
+        const mActorId =
+          chunk.match(/"video_owner":\s*\{[^}]*"id":\s*"(\d+)"/i) ||
+          chunk.match(/"owner":\s*\{[^}]*"id":\s*"(\d+)"/i) ||
+          chunk.match(/"actors":\s*\[\s*\{[^}]*"id":\s*"(\d+)"/i);
+        if (mActorId && mActorId[1]) {
+          result.authorUid = mActorId[1];
+          break;
+        }
+        searchIdx += targetVideoId.length;
+      }
+    }
     if (!result.authorUid) {
       const mActorId =
         html.match(/"actors":\s*\[\s*\{[^}]*"id":\s*"(\d+)"/i) ||
@@ -1444,12 +1481,31 @@ export class ScraperService implements OnModuleDestroy {
             if (isReel) {
               // --- SCOPED REEL EXTRACTION ---
               // Tác giả Reel: thẻ <h2> hoặc link profile trong reel player
-              const h2 = document.querySelector('h2');
+              const reelContainer =
+                document.querySelector('div[role="main"]') ||
+                document.querySelector('div[role="dialog"]') ||
+                document.body;
+
+              const h2 = reelContainer.querySelector('h2');
               if (h2 && h2.textContent && h2.textContent.trim()) {
-                author = h2.textContent.trim();
+                const t = h2.textContent.trim();
+                if (!/^(đăng nhập|login|facebook|bài viết|reels|watch)$/i.test(t)) {
+                  author = t;
+                }
               }
               if (!author) {
-                const followBtn = document.querySelector(
+                const authorLink = reelContainer.querySelector(
+                  'a[role="link"][href*="/reel/"], a[role="link"][href*="/profile.php"], a[role="link"][href*="/people/"]'
+                );
+                if (authorLink && authorLink.textContent && authorLink.textContent.trim()) {
+                  const t = authorLink.textContent.trim();
+                  if (t.length >= 2 && !/^(đăng nhập|login|theo dõi|follow)$/i.test(t)) {
+                    author = t;
+                  }
+                }
+              }
+              if (!author) {
+                const followBtn = reelContainer.querySelector(
                   '[aria-label*="Follow" i], [aria-label*="Theo dõi" i]'
                 );
                 if (followBtn) {
@@ -1858,10 +1914,15 @@ export class ScraperService implements OnModuleDestroy {
     const validation = this.validateScrapeResult(result, platform, contentType);
 
     // Đối với Facebook: nếu cào HTTP mà toàn bộ tương tác đều bằng 0 (metrics = 0)
+    // hoặc đối với Facebook Reel / Video mà lượt like = 0 trong khi có tương tác khác (views/comments/shares > 0)
     // thì HTTP CHƯA ĐƯỢC coi là đủ (vì Facebook thường hoãn render tương tác sang client-side GraphQL).
     const isFacebookZeroMetrics = platform === 'facebook' && !validation.hasValidMetrics;
+    const isFacebookReelMissingLikes =
+      platform === 'facebook' &&
+      (contentType === 'reel' || contentType === 'video') &&
+      (!result || result.LuotLike === 0);
 
-    if (result && validation.valid && validation.confidence >= 50 && !isFacebookZeroMetrics) {
+    if (result && validation.valid && validation.confidence >= 50 && !isFacebookZeroMetrics && !isFacebookReelMissingLikes) {
       result.crawlStatus = 'SCRAPE_SUCCESS';
       result.confidence = validation.confidence;
       this.logger.log(
@@ -1872,6 +1933,8 @@ export class ScraperService implements OnModuleDestroy {
 
     if (isFacebookZeroMetrics && !validation.fallbackReason) {
       validation.fallbackReason = 'facebook_zero_metrics_require_browser';
+    } else if (isFacebookReelMissingLikes && !validation.fallbackReason) {
+      validation.fallbackReason = 'facebook_reel_missing_likes_require_browser';
     }
 
     // 4. Fallback sang Playwright Browser nếu dữ liệu HTTP không đủ hoặc nghi ngờ

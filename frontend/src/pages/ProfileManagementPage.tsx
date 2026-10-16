@@ -20,6 +20,10 @@ import {
   ShieldCheck,
   ShieldAlert,
   Loader2,
+  Pencil,
+  ArrowLeftRight,
+  X,
+  Save,
 } from 'lucide-react';
 import { socket } from '../services/socket';
 import { profileManagementApi } from '../services/profile-management.service';
@@ -28,12 +32,22 @@ import { Toast } from '../components/Toast';
 import { ToastItem } from '../types/video';
 import { useResizableColumns } from '../hooks/useResizableColumns';
 import { ResizeHandle } from '../components/ResizeHandle';
+import { FacebookIcon, TikTokIcon } from '../components/Icons';
 import {
   UserProfileItem,
   ProfileCrawlProgress,
   ProfileManagementState,
 } from '../types/profile-management';
 import { useAuth } from '../context/AuthContext';
+
+export function getProfilePlatform(rawUrl?: string, uid?: string): 'facebook' | 'tiktok' {
+  const url = (rawUrl || '').toLowerCase();
+  const id = (uid || '').toLowerCase();
+  if (url.includes('tiktok.com') || url.startsWith('@') || id.startsWith('@')) {
+    return 'tiktok';
+  }
+  return 'facebook';
+}
 
 function normalizeProfileUrl(rawUrl?: string): string {
   if (!rawUrl) return '';
@@ -42,6 +56,9 @@ function normalizeProfileUrl(rawUrl?: string): string {
   s = s.replace(/\\+u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
   s = s.replace(/[\/\\]u0025([0-9a-fA-F]{2})/gi, (_, hex) => '%' + hex);
   s = s.replace(/u0025([0-9a-fA-F]{2})/gi, (_, hex) => '%' + hex);
+  if (s.startsWith('@')) {
+    s = 'https://www.tiktok.com/' + s;
+  }
   if (/\/people\/[^/]+\/\d+$/i.test(s)) {
     s += '/';
   }
@@ -84,11 +101,20 @@ export const ProfileManagementPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Edit Profile modal state
+  const [editingProfile, setEditingProfile] = useState<UserProfileItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editUrl, setEditUrl] = useState('');
+  const [editUid, setEditUid] = useState('');
+  const [editPlatform, setEditPlatform] = useState<'facebook' | 'tiktok'>('facebook');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
   // Kéo giãn độ rộng các cột của bảng
   const { widths: colWidths, handleMouseDown: handleColResize } = useResizableColumns(
     {
       stt: 60,
-      name: 320,
+      name: 260,
+      platform: 120,
       uid: 200,
       actions: 140,
     },
@@ -179,19 +205,19 @@ export const ProfileManagementPage: React.FC = () => {
   const handleStartCrawl = async () => {
     setErrorMsg(null);
 
-    // Kiểm tra cookie trước khi cào
-    if (!hasCookie || cookieCount === 0) {
-      showToast('Chưa nạp cookie! Vui lòng vào mục Cookie để nạp cookie trước khi cào.', 'error');
-      return;
-    }
-
     const urls = profileUrlsText
       .split(/[\r\n,;]+/)
       .map((u) => normalizeProfileUrl(u))
       .filter((u) => u.length > 0);
 
     if (urls.length === 0) {
-      setErrorMsg('Vui lòng nhập ít nhất một đường dẫn Facebook cá nhân.');
+      setErrorMsg('Vui lòng nhập ít nhất một đường dẫn Facebook hoặc TikTok cá nhân.');
+      return;
+    }
+
+    const hasFacebook = urls.some((u) => !u.includes('tiktok.com') && !u.startsWith('@'));
+    if (hasFacebook && (!hasCookie || cookieCount === 0)) {
+      showToast('Chưa nạp cookie Facebook! Vui lòng vào mục Cookie để nạp cookie trước khi cào trang Facebook.', 'error');
       return;
     }
 
@@ -254,6 +280,54 @@ export const ProfileManagementPage: React.FC = () => {
     }
   };
 
+  // Chuyển đổi nhanh phân loại nền tảng (Facebook <-> TikTok)
+  const handleTogglePlatform = async (p: UserProfileItem) => {
+    if (!isAdmin) return;
+    const currentPlatform = getProfilePlatform(p.profileUrl, p.uid);
+    const targetPlatform = currentPlatform === 'facebook' ? 'tiktok' : 'facebook';
+    try {
+      const res = await profileManagementApi.updateProfile(p.id, { platform: targetPlatform });
+      setProfiles((prev) => prev.map((item) => (item.id === p.id ? res.item : item)));
+      showToast(
+        `Đã chuyển phân loại "${p.name}" sang ${targetPlatform === 'facebook' ? 'Facebook' : 'TikTok'}.`,
+        'success'
+      );
+    } catch (err: unknown) {
+      showToast(`Không thể đổi phân loại: ${(err as Error)?.message || String(err)}`, 'error');
+    }
+  };
+
+  // Mở modal chỉnh sửa profile
+  const handleOpenEdit = (p: UserProfileItem) => {
+    setEditingProfile(p);
+    setEditName(p.name || '');
+    setEditUrl(p.profileUrl || '');
+    setEditUid(p.uid || '');
+    setEditPlatform(getProfilePlatform(p.profileUrl, p.uid));
+  };
+
+  // Lưu chỉnh sửa profile
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProfile) return;
+    try {
+      setIsSavingEdit(true);
+      const res = await profileManagementApi.updateProfile(editingProfile.id, {
+        name: editName.trim(),
+        profileUrl: editUrl.trim(),
+        uid: editUid.trim() || undefined,
+        platform: editPlatform,
+      });
+      setProfiles((prev) => prev.map((item) => (item.id === editingProfile.id ? res.item : item)));
+      showToast(`Đã lưu thay đổi cho profile "${editName}".`, 'success');
+      setEditingProfile(null);
+    } catch (err: unknown) {
+      showToast(`Lỗi khi lưu profile: ${(err as Error)?.message || String(err)}`, 'error');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   // Copy link helper
   const handleCopyLink = (url: string, id: string) => {
     const cleanUrl = normalizeProfileUrl(url);
@@ -273,6 +347,7 @@ export const ProfileManagementPage: React.FC = () => {
     const headers = [
       'STT',
       'Họ và tên',
+      'Loại',
       'UID',
       'Link Profile',
       'Ngày quét',
@@ -281,6 +356,7 @@ export const ProfileManagementPage: React.FC = () => {
     const rows = profiles.map((p, idx) => [
       idx + 1,
       `"${(p.name || '').replace(/"/g, '""')}"`,
+      `"${getProfilePlatform(p.profileUrl, p.uid) === 'facebook' ? 'Facebook' : 'TikTok'}"`,
       `"${(p.uid || '').replace(/"/g, '""')}"`,
       `"${(normalizeProfileUrl(p.profileUrl) || '').replace(/"/g, '""')}"`,
       `"${p.crawledAt || ''}"`,
@@ -293,7 +369,7 @@ export const ProfileManagementPage: React.FC = () => {
     link.setAttribute('href', url);
     link.setAttribute(
       'download',
-      `facebook_profiles_${new Date().toISOString().slice(0, 10)}.csv`
+      `user_profiles_${new Date().toISOString().slice(0, 10)}.csv`
     );
     document.body.appendChild(link);
     link.click();
@@ -304,10 +380,16 @@ export const ProfileManagementPage: React.FC = () => {
   const filteredProfiles = profiles.filter((p) => {
     const term = searchTerm.toLowerCase().trim();
     if (!term) return true;
+    const platform = getProfilePlatform(p.profileUrl, p.uid);
+    const platformMatch =
+      platform.includes(term) ||
+      (term === 'fb' && platform === 'facebook') ||
+      (term === 'tt' && platform === 'tiktok');
     return (
       (p.name && p.name.toLowerCase().includes(term)) ||
       (p.uid && p.uid.toLowerCase().includes(term)) ||
-      (p.profileUrl && p.profileUrl.toLowerCase().includes(term))
+      (p.profileUrl && p.profileUrl.toLowerCase().includes(term)) ||
+      platformMatch
     );
   });
 
@@ -328,7 +410,7 @@ export const ProfileManagementPage: React.FC = () => {
                 Quản lý Profile Cá Nhân
               </h1>
               <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                Nhập danh sách link Facebook cá nhân để cào bảng thông tin: Họ và tên, UID, Link Profile.
+                Nhập danh sách link Facebook hoặc TikTok cá nhân để cào bảng thông tin: Họ và tên, Loại, UID, Link Profile.
               </p>
             </div>
           </div>
@@ -379,7 +461,7 @@ export const ProfileManagementPage: React.FC = () => {
               Danh sách Link Profile cá nhân (Mỗi link 1 dòng)
             </label>
             <span className="text-xs text-slate-500 dark:text-slate-400">
-              Hỗ trợ định dạng profile.php?id=... hoặc link username facebook.com/tennguoidung
+              Hỗ trợ Facebook (profile.php?id=..., username) và TikTok (@username, tiktok.com/@...)
             </span>
           </div>
 
@@ -387,7 +469,7 @@ export const ProfileManagementPage: React.FC = () => {
             rows={3}
             value={profileUrlsText}
             onChange={(e) => setProfileUrlsText(e.target.value)}
-            placeholder="https://www.facebook.com/profile.php?id=...&#10;https://www.facebook.com/username"
+            placeholder="https://www.facebook.com/username&#10;https://www.tiktok.com/@username&#10;@username"
             className="w-full text-xs font-mono p-3.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition resize-y"
           />
 
@@ -638,6 +720,10 @@ export const ProfileManagementPage: React.FC = () => {
                   Họ và tên
                   <ResizeHandle onMouseDown={(e) => handleColResize('name', e)} />
                 </th>
+                <th style={{ width: colWidths.platform, minWidth: colWidths.platform }} className="relative py-3 px-4 text-center border-r border-slate-200 dark:border-slate-800">
+                  Loại
+                  <ResizeHandle onMouseDown={(e) => handleColResize('platform', e)} />
+                </th>
                 <th style={{ width: colWidths.uid, minWidth: colWidths.uid }} className="relative py-3 px-4 border-r border-slate-200 dark:border-slate-800">
                   UID
                   <ResizeHandle onMouseDown={(e) => handleColResize('uid', e)} />
@@ -651,12 +737,12 @@ export const ProfileManagementPage: React.FC = () => {
             <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800/80">
               {filteredProfiles.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-12 text-center text-slate-400 dark:text-slate-500">
+                  <td colSpan={5} className="py-12 text-center text-slate-400 dark:text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Users className="w-8 h-8 text-slate-300 dark:text-slate-600" />
                       <p className="font-medium">Chưa có thông tin profile nào.</p>
                       <p className="text-[11px]">
-                        Nhập liên kết Facebook ở trên và bấm "Bắt đầu cào thông tin" để quét.
+                        Nhập liên kết ở trên hoặc bấm "Quét người dùng dựa trên dữ liệu" để cập nhật.
                       </p>
                     </div>
                   </td>
@@ -715,6 +801,36 @@ export const ProfileManagementPage: React.FC = () => {
                       </div>
                     </td>
 
+                    {/* Loại (Facebook / TikTok) */}
+                    <td style={{ width: colWidths.platform, minWidth: colWidths.platform }} className="py-3.5 px-4 text-center border-r border-slate-100 dark:border-slate-800/60">
+                      {(() => {
+                        const isFB = getProfilePlatform(p.profileUrl, p.uid) === 'facebook';
+                        return (
+                          <button
+                            type="button"
+                            disabled={!isAdmin}
+                            onClick={() => handleTogglePlatform(p)}
+                            className={`group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border shrink-0 transition-all cursor-pointer hover:shadow-xs active:scale-95 disabled:cursor-default disabled:hover:shadow-none ${
+                              isFB
+                                ? 'bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/50 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-800'
+                                : 'bg-pink-50 hover:bg-pink-100 dark:bg-pink-950/40 dark:hover:bg-pink-900/50 text-pink-700 dark:text-pink-400 border-pink-200 dark:border-pink-800'
+                            }`}
+                            title={isAdmin ? `Nhấp để chuyển nhanh sang ${isFB ? 'TikTok' : 'Facebook'}` : undefined}
+                          >
+                            {isFB ? (
+                              <FacebookIcon className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                            ) : (
+                              <TikTokIcon className="w-3 h-3 text-pink-600 dark:text-pink-400" />
+                            )}
+                            <span>{isFB ? 'Facebook' : 'TikTok'}</span>
+                            {isAdmin && (
+                              <ArrowLeftRight className="w-2.5 h-2.5 opacity-40 group-hover:opacity-100 transition-opacity" />
+                            )}
+                          </button>
+                        );
+                      })()}
+                    </td>
+
                     {/* UID */}
                     <td style={{ width: colWidths.uid, minWidth: colWidths.uid }} className="py-3.5 px-4 font-mono text-xs border-r border-slate-100 dark:border-slate-800/60">
                       {p.uid ? (
@@ -729,16 +845,25 @@ export const ProfileManagementPage: React.FC = () => {
                     {/* Thao tác */}
                     <td style={{ width: colWidths.actions, minWidth: colWidths.actions }} className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1">
-                        {/* Mở Facebook */}
-                        <a
-                          href={normalizeProfileUrl(p.profileUrl)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition"
-                          title="Mở Facebook"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
+                        {/* Mở Facebook / TikTok */}
+                        {(() => {
+                          const isFB = getProfilePlatform(p.profileUrl, p.uid) === 'facebook';
+                          return (
+                            <a
+                              href={normalizeProfileUrl(p.profileUrl)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={`p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition ${
+                                isFB
+                                  ? 'hover:text-blue-600 dark:hover:text-blue-400'
+                                  : 'hover:text-pink-600 dark:hover:text-pink-400'
+                              }`}
+                              title={isFB ? 'Mở Facebook' : 'Mở TikTok'}
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          );
+                        })()}
 
                         {/* Copy Link */}
                         <button
@@ -753,6 +878,18 @@ export const ProfileManagementPage: React.FC = () => {
                             <Copy className="w-3.5 h-3.5" />
                           )}
                         </button>
+
+                        {/* Chỉnh sửa thông tin profile (Chỉ Admin) */}
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdit(p)}
+                            className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
+                            title="Chỉnh sửa profile"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
 
                         {/* Xóa (Chỉ Admin mới có quyền xóa) */}
                         {isAdmin && (
@@ -774,6 +911,155 @@ export const ProfileManagementPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Modal Chỉnh sửa Profile */}
+      {editingProfile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
+            onClick={() => setEditingProfile(null)}
+          />
+          <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 z-10 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center border border-blue-200 dark:border-blue-800">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+                    Chỉnh sửa thông tin Profile
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Phân loại nền tảng và cập nhật thông tin nhận diện
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingProfile(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="mt-4 space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Phân loại nền tảng (Loại)
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditPlatform('facebook');
+                      if (editUrl.includes('tiktok.com/@')) {
+                        const m = editUrl.match(/tiktok\.com\/@([^/?#]+)/i);
+                        if (m) setEditUrl(`https://www.facebook.com/${m[1]}`);
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border font-semibold transition cursor-pointer ${
+                      editPlatform === 'facebook'
+                        ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-700 ring-2 ring-blue-500/20'
+                        : 'bg-white dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <FacebookIcon className="w-4 h-4 text-blue-600" />
+                    <span>Facebook</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditPlatform('tiktok');
+                      if (editUrl.includes('facebook.com')) {
+                        const clean = editUrl.replace(/^https?:\/\/(?:www\.)?facebook\.com\/?/i, '').replace(/\/+$/, '');
+                        if (clean) setEditUrl(`https://www.tiktok.com/@${clean}`);
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border font-semibold transition cursor-pointer ${
+                      editPlatform === 'tiktok'
+                        ? 'bg-pink-50 dark:bg-pink-950/50 text-pink-600 dark:text-pink-400 border-pink-300 dark:border-pink-700 ring-2 ring-pink-500/20'
+                        : 'bg-white dark:bg-slate-800/40 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <TikTokIcon className="w-4 h-4 text-pink-600" />
+                    <span>TikTok</span>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Họ và tên *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Nhập họ và tên..."
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Đường dẫn Profile (URL) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editUrl}
+                  onChange={(e) => setEditUrl(e.target.value)}
+                  placeholder="https://www.facebook.com/... hoặc https://www.tiktok.com/@..."
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-[11px] outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  UID (Định danh / Username)
+                </label>
+                <input
+                  type="text"
+                  value={editUid}
+                  onChange={(e) => setEditUid(e.target.value)}
+                  placeholder="UID số hoặc username..."
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-[11px] outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingProfile(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold transition cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold transition shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingEdit ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Đang lưu...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-3.5 h-3.5" />
+                      <span>Lưu thay đổi</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Realtime Toast Notification */}
       <Toast toast={toast} onDismiss={() => setToast(null)} />

@@ -877,6 +877,48 @@ export class ProfileScannerService implements OnModuleInit {
                 ? checkCaptionViolation(caption)
                 : { isViolation: false, reason: '' };
 
+              // Đối chiếu đa chiều tác giả (Multi-dimensional Author Reconciliation):
+              let finalAuthor = (scraped.nguoiDang || '').trim();
+
+              // Chiều 1: Đối chiếu authorUid với targetProfileId
+              // Nếu bài viết có authorUid khớp với UID của profile đang quét, tác giả chắc chắn là profileOwnerName
+              if (targetProfileId && scraped.authorUid && String(scraped.authorUid) === String(targetProfileId)) {
+                if (profileOwnerName) {
+                  finalAuthor = profileOwnerName;
+                }
+              } else if (!isShared) {
+                // Chiều 2: Bài viết trực tiếp (không phải bài chia sẻ) trên timeline của profile
+                if (profileOwnerName) {
+                  const normAuthor = this.domParser.cleanTextForMatching(finalAuthor);
+                  const normOwner = this.domParser.cleanTextForMatching(profileOwnerName);
+                  if (
+                    !finalAuthor ||
+                    finalAuthor === 'Người dùng Facebook' ||
+                    (normAuthor && normOwner && !normAuthor.includes(normOwner) && !normOwner.includes(normAuthor))
+                  ) {
+                    // Chiều 3: Tra cứu trong database profiles theo targetProfileId / profileUrl
+                    const dbProf = targetProfileId
+                      ? this.db.getProfileByUid(targetProfileId)
+                      : this.db.getProfileByUrl(profileUrl);
+                    finalAuthor = (dbProf && dbProf.name) || profileOwnerName;
+                  }
+                }
+              }
+
+              // Chiều 4: Đối chiếu với database profiles đã lưu qua authorUid (nếu có)
+              if (scraped.authorUid) {
+                const dbAuthor = this.db.getProfileByUid(scraped.authorUid);
+                if (dbAuthor && dbAuthor.name) {
+                  if (targetProfileId && String(scraped.authorUid) === String(targetProfileId)) {
+                    finalAuthor = dbAuthor.name;
+                  }
+                }
+              }
+
+              if (!finalAuthor) {
+                finalAuthor = profileOwnerName || 'Người dùng Facebook';
+              }
+
               const postItem: ScannedPostItem = this.sanitizeScannedPost({
                 id: `post_${finalUrl}`,
                 videoId: scraped.postId || '',
@@ -887,7 +929,7 @@ export class ProfileScannerService implements OnModuleInit {
                 videoUrl: isVideo ? finalUrl : 'N/A',
                 reelUrl: finalUrl.includes('/reel/') ? finalUrl : 'N/A',
                 videoPoster: '',
-                author: scraped.nguoiDang || profileOwnerName || 'Người dùng Facebook',
+                author: finalAuthor,
                 postType: scraped.loai || finalLoai,
                 date: dateInfo.formatted,
                 timestamp: dateInfo.timestamp,
@@ -975,10 +1017,9 @@ export class ProfileScannerService implements OnModuleInit {
         }
       }
 
-      // Lọc trùng lặp bài viết trên foundPosts: nếu 2 bài có cùng nội dung/link, ưu tiên bài có tương tác thật
+      // Lọc trùng lặp bài viết trên foundPosts: chỉ hợp nhất khi trùng ID bài viết, URL hoặc videoId
       const uniqueFound: ScannedPostItem[] = [];
       for (const p of this.state.foundPosts) {
-        const pCleanText = this.cleanTextForMatching(p.textPreview);
         const pId = this.extractPostIdFromUrl(p.postUrl);
 
         const existingIdx = uniqueFound.findIndex((u) => {
@@ -988,11 +1029,7 @@ export class ProfileScannerService implements OnModuleInit {
             const uId = this.extractPostIdFromUrl(u.postUrl);
             if (uId && uId === pId) return true;
           }
-          if (p.videoId && u.videoId && p.videoId === u.videoId) return true;
-          if (pCleanText && pCleanText.length >= 10 && u.textPreview) {
-            const uCleanText = this.cleanTextForMatching(u.textPreview);
-            if (uCleanText && (pCleanText.includes(uCleanText.slice(0, 30)) || uCleanText.includes(pCleanText.slice(0, 30)))) return true;
-          }
+          if (p.videoId && u.videoId && p.videoId !== 'N/A' && u.videoId !== 'N/A' && p.videoId === u.videoId) return true;
           return false;
         });
 
@@ -1015,6 +1052,8 @@ export class ProfileScannerService implements OnModuleInit {
       }
       this.state.foundPosts = uniqueFound;
       this.state.matchedCount = uniqueFound.length;
+      this.state.postsCount = uniqueFound.length;
+      this.state.videosCount = uniqueFound.filter((p) => p.hasVideo).length;
 
       this.state.progress = {
         profileIndex: urls.length,

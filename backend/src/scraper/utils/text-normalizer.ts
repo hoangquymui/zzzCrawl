@@ -179,7 +179,10 @@ export function isBoilerplateCaption(text?: string | null): boolean {
  */
 export function isValidAuthor(name?: string | null): boolean {
   if (!name) return false;
-  const clean = name.trim().toLowerCase();
+  const clean = name
+    .trim()
+    .replace(/^\(\d+\+?\)\s*/, '')
+    .toLowerCase();
   if (clean.length < 2) return false;
 
   return !INVALID_AUTHORS.some((inv) => clean === inv || clean.startsWith(inv + ' - ') || clean.startsWith(inv + ' | '));
@@ -191,7 +194,10 @@ export function isValidAuthor(name?: string | null): boolean {
 export function cleanAuthorName(name?: string | null): string {
   if (!name) return '';
   const decoded = decodeHtmlEntities(name).trim();
-  const cleaned = decoded.replace(/\s+(?:on|trên)\s+reels$/i, '').trim();
+  const cleaned = decoded
+    .replace(/^\(\d+\+?\)\s*/, '')
+    .replace(/\s+(?:on|trên)\s+reels$/i, '')
+    .trim();
 
   if (!isValidAuthor(cleaned)) {
     return '';

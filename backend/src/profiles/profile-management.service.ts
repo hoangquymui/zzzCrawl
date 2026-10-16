@@ -10,7 +10,7 @@ import {
 import { VideosGateway } from '../videos/videos.gateway';
 import { VideosService } from '../videos/videos.service';
 import { CookieService, ParsedCookieItem } from '../cookies/cookie.service';
-import { normalizeFacebookUrl } from '../scraper/utils/url-cleaner';
+import { normalizeFacebookUrl, isTikTokUrl, isFacebookUrl } from '../scraper/utils/url-cleaner';
 
 @Injectable()
 export class ProfileManagementService implements OnModuleInit {
@@ -50,7 +50,7 @@ export class ProfileManagementService implements OnModuleInit {
       this.db.syncVideoAuthorsWithProfiles();
       if (this.videosService) {
         this.videosService.reloadVideos();
-        this.videosGateway.emitVideosUpdated(this.videosService.getVideos());
+        this.videosGateway?.emitVideosUpdated?.(this.videosService.getVideos());
       }
     } catch (err: unknown) {
       this.logger.warn(`Lỗi thông báo cập nhật videos: ${(err as Error)?.message}`);
@@ -351,11 +351,57 @@ export class ProfileManagementService implements OnModuleInit {
       this.state.profiles = this.profiles;
       this.state.profilesCount = this.profiles.length;
       this.emitLog(`[XÓA] Đã xóa profile ID: ${id}`);
-      this.videosGateway.emitProfileMgmtStatus('IDLE');
+      this.videosGateway?.emitProfileMgmtStatus?.('IDLE');
       this.notifyVideosUpdated();
       return true;
     }
     return false;
+  }
+
+  public updateProfile(
+    id: string,
+    data: {
+      name?: string;
+      profileUrl?: string;
+      uid?: string;
+      platform?: 'facebook' | 'tiktok';
+      bio?: string;
+    }
+  ): UserProfileItem | null {
+    const idx = this.profiles.findIndex((p) => p.id === id);
+    if (idx === -1) return null;
+
+    const current = this.profiles[idx];
+    let newUrl = data.profileUrl !== undefined ? data.profileUrl.trim() : current.profileUrl;
+    let newUid = data.uid !== undefined ? data.uid.trim() : current.uid;
+    const newName = data.name !== undefined ? data.name.trim() : current.name;
+
+    // Chuyển đổi nền tảng (Facebook <-> TikTok) nếu được chỉ định
+    if (data.platform) {
+      const handle = (newUid || newUrl.replace(/^https?:\/\/(?:www\.)?(?:facebook\.com|tiktok\.com)\/?(?:@)?/i, '')).replace(/\/+$/, '');
+      if (data.platform === 'tiktok') {
+        newUrl = `https://www.tiktok.com/@${handle}`;
+      } else {
+        newUrl = `https://www.facebook.com/${handle}`;
+      }
+    }
+
+    const updated: UserProfileItem = {
+      ...current,
+      name: newName || current.name,
+      profileUrl: newUrl,
+      uid: newUid || current.uid,
+      bio: data.bio !== undefined ? data.bio : current.bio,
+    };
+
+    this.profiles[idx] = updated;
+    this.db.upsertProfile(updated);
+    this.saveToDatabase();
+    this.state.profiles = this.profiles;
+    this.videosGateway?.emitProfileMgmtItem?.(updated);
+    this.notifyVideosUpdated();
+    this.emitLog(`✔ [CẬP NHẬT PROFILE] Đã cập nhật profile: "${updated.name}" (${updated.profileUrl})`);
+    return updated;
   }
 
   public clearProfiles(): boolean {
@@ -365,7 +411,7 @@ export class ProfileManagementService implements OnModuleInit {
     this.state.profiles = [];
     this.state.profilesCount = 0;
     this.emitLog(`[XÓA TẤT CẢ] Đã làm trống danh sách profile.`);
-    this.videosGateway.emitProfileMgmtStatus('IDLE');
+    this.videosGateway?.emitProfileMgmtStatus?.('IDLE');
     this.notifyVideosUpdated();
     return true;
   }
@@ -375,7 +421,7 @@ export class ProfileManagementService implements OnModuleInit {
       this.currentCancelFlag = true;
       this.emitLog(`[HỆ THỐNG] Nhận yêu cầu dừng quét profile từ người dùng...`);
       this.state.status = 'STOPPED';
-      this.videosGateway.emitProfileMgmtStatus('STOPPED');
+      this.videosGateway?.emitProfileMgmtStatus?.('STOPPED');
     }
   }
 
@@ -385,12 +431,12 @@ export class ProfileManagementService implements OnModuleInit {
     if (this.state.logs.length > 500) {
       this.state.logs = this.state.logs.slice(-500);
     }
-    this.videosGateway.emitProfileMgmtLog(message);
+    this.videosGateway?.emitProfileMgmtLog?.(message);
   }
 
   private emitProgress(prog: ProfileCrawlProgress): void {
     this.state.progress = prog;
-    this.videosGateway.emitProfileMgmtProgress(prog);
+    this.videosGateway?.emitProfileMgmtProgress?.(prog);
   }
 
   private extractNumericIdFromUrl(rawUrl: string): string | undefined {
@@ -481,34 +527,46 @@ export class ProfileManagementService implements OnModuleInit {
     const cleanUrls = Array.from(
       new Set(
         urls
-          .map((u) => normalizeFacebookUrl(u || '').trim())
+          .map((u) => {
+            let s = (u || '').trim();
+            if (s.startsWith('@')) {
+              s = 'https://www.tiktok.com/' + s;
+            }
+            if (s.includes('tiktok.com')) {
+              return s;
+            }
+            return normalizeFacebookUrl(s);
+          })
           .filter((u) => u.startsWith('http://') || u.startsWith('https://'))
       )
     );
 
     if (cleanUrls.length === 0) {
-      this.emitLog(`[CẢNH BÁO] Không có link profile Facebook hợp lệ để quét.`);
+      this.emitLog(`[CẢNH BÁO] Không có link profile Facebook hoặc TikTok hợp lệ để quét.`);
       return { started: false, count: 0 };
     }
 
-    try {
-      await this.cookieService.validateCookieForCrawl();
-    } catch (err: unknown) {
-      this.emitLog(`[LỖI] Cookie hết hạn! Vui lòng cập nhật cookie mới.`);
-      throw new BadRequestException('Cookie hết hạn');
+    const hasFacebook = cleanUrls.some((u) => !u.includes('tiktok.com'));
+    if (hasFacebook) {
+      try {
+        await this.cookieService.validateCookieForCrawl();
+      } catch (err: unknown) {
+        this.emitLog(`[LỖI] Cookie Facebook hết hạn hoặc chưa nạp! Vui lòng cập nhật cookie mới.`);
+        throw new BadRequestException('Cookie Facebook chưa nạp hoặc hết hạn');
+      }
     }
 
     this.isScanning = true;
     this.currentCancelFlag = false;
     this.state.status = 'SCANNING';
-    this.videosGateway.emitProfileMgmtStatus('SCANNING');
+    this.videosGateway?.emitProfileMgmtStatus?.('SCANNING');
 
     // Chạy ngầm trong background
     this.executeCrawl(cleanUrls).catch((err) => {
       this.logger.error(`Lỗi trong tiến trình quét profile: ${err?.message}`);
       this.emitLog(`[LỖI TIẾN TRÌNH] ${err?.message}`);
       this.state.status = 'ERROR';
-      this.videosGateway.emitProfileMgmtStatus('ERROR');
+      this.videosGateway?.emitProfileMgmtStatus?.('ERROR');
       this.isScanning = false;
     });
 
@@ -527,9 +585,18 @@ export class ProfileManagementService implements OnModuleInit {
       .replace(/&nbsp;/g, ' ');
   }
 
+  private unescapeUnicode(str?: string | null): string {
+    if (!str) return '';
+    try {
+      return JSON.parse('"' + str.replace(/"/g, '\\"') + '"');
+    } catch {
+      return str.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    }
+  }
+
   private cleanProfileName(raw?: string | null): string {
     if (!raw) return '';
-    let s = this.unescapeHtml(raw).trim();
+    let s = this.unescapeUnicode(this.unescapeHtml(raw)).trim();
     if (s.includes('(@')) {
       s = s.split('(@')[0];
     }
@@ -542,7 +609,118 @@ export class ProfileManagementService implements OnModuleInit {
     return s;
   }
 
-  private async crawlSingleProfileHttp(profileUrl: string): Promise<UserProfileItem> {
+  private readonly ttHeaders = {
+    'User-Agent':
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+  };
+
+  public async crawlSingleTikTokProfile(profileUrl: string): Promise<UserProfileItem> {
+    let cleanUrl = profileUrl.trim();
+    if (cleanUrl.startsWith('@')) {
+      cleanUrl = `https://www.tiktok.com/${cleanUrl}`;
+    }
+    const mTT = cleanUrl.match(/tiktok\.com\/@([^/?#]+)/i);
+    const username = mTT ? mTT[1] : cleanUrl.replace(/^https?:\/\/(?:www\.)?tiktok\.com\/?/i, '').replace(/^@/, '');
+    if (!username) {
+      throw new Error('Link TikTok không hợp lệ hoặc thiếu username');
+    }
+    const targetUrl = `https://www.tiktok.com/@${username}`;
+
+    let html = '';
+    try {
+      const res = await fetch(targetUrl, {
+        headers: this.ttHeaders,
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+      html = await res.text();
+    } catch (err: unknown) {
+      this.logger.warn(`Fetch HTTP TikTok profile không thành công cho ${targetUrl}: ${(err as Error)?.message}`);
+    }
+
+    let name = username;
+    let uid = username;
+    let bio: string | undefined = undefined;
+    let avatarUrl: string | undefined = undefined;
+    let rawAvatarUrl: string | undefined = undefined;
+
+    // 1. Phân tích Universal Data for Rehydration (JSON cấu trúc chính thức của web TikTok)
+    if (html) {
+      const mJson = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/i);
+      if (mJson) {
+        try {
+          const parsed = JSON.parse(mJson[1]);
+          const user = parsed?.['__DEFAULT_SCOPE__']?.['webapp.user-detail']?.userInfo?.user;
+          if (user) {
+            if (user.nickname) name = user.nickname.trim();
+            if (user.uniqueId) uid = user.uniqueId.trim();
+            else if (user.id) uid = String(user.id).trim();
+            if (user.signature) bio = user.signature.trim();
+            rawAvatarUrl = user.avatarLarger || user.avatarMedium || user.avatarThumb;
+          }
+        } catch {}
+      }
+
+      // 2. Fallback SIGI_STATE nếu Universal Data không có
+      if (!rawAvatarUrl) {
+        const mSigi = html.match(/<script id="SIGI_STATE"[^>]*>([\s\S]*?)<\/script>/i);
+        if (mSigi) {
+          try {
+            const parsedSigi = JSON.parse(mSigi[1]);
+            const user = parsedSigi?.UserModule?.users?.[username];
+            if (user) {
+              if (user.nickname) name = user.nickname.trim();
+              if (user.uniqueId) uid = user.uniqueId.trim();
+              if (user.signature) bio = user.signature.trim();
+              rawAvatarUrl = user.avatarLarger || user.avatarMedium || user.avatarThumb;
+            }
+          } catch {}
+        }
+      }
+
+      // 3. Fallback Meta Tags & Title
+      if (name === username) {
+        const mTitle = html.match(/<title>([^<]+)\(@([^)]+)\)\s*\|\s*TikTok<\/title>/i);
+        if (mTitle) {
+          name = mTitle[1].trim();
+          if (mTitle[2]) uid = mTitle[2].trim();
+        }
+      }
+
+      if (!rawAvatarUrl) {
+        const mOgImg = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i);
+        if (mOgImg) rawAvatarUrl = this.unescapeHtml(mOgImg[1]).trim();
+      }
+      if (!bio) {
+        const mOgDesc = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i);
+        if (mOgDesc) bio = this.unescapeHtml(mOgDesc[1]).trim();
+      }
+    }
+
+    // Tải và lưu trữ avatar về local
+    if (rawAvatarUrl) {
+      const ok = await this.downloadAvatar(rawAvatarUrl, uid, false);
+      if (ok) {
+        avatarUrl = `/api/profile-management/avatar/${uid}`;
+      }
+    }
+
+    const itemId = `prof_tt_${uid}_${Math.random().toString(36).substring(2, 6)}`;
+    return {
+      id: itemId,
+      profileUrl: targetUrl,
+      uid,
+      name: this.cleanProfileName(name) || name,
+      avatarUrl,
+      bio,
+      status: 'SUCCESS',
+      crawledAt: new Date().toISOString(),
+    };
+  }
+
+  public async crawlSingleFacebookProfile(profileUrl: string): Promise<UserProfileItem> {
     profileUrl = normalizeFacebookUrl(profileUrl);
     const urlNumericId = this.extractNumericIdFromUrl(profileUrl);
     const urlSlug = this.extractSlugFromUrl(profileUrl);
@@ -570,62 +748,77 @@ export class ProfileManagementService implements OnModuleInit {
         signal: AbortSignal.timeout(15000),
       });
       html = await res.text();
-      
-      // Update profileUrl to Canonical URL if available to resolve numeric IDs to vanity URLs
-      const mCanonical = html.match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i);
-      if (mCanonical && mCanonical[1]) {
-         const cleanCanonical = this.unescapeHtml(mCanonical[1]).trim();
-         if (cleanCanonical.includes('facebook.com')) {
-             profileUrl = normalizeFacebookUrl(cleanCanonical);
-         }
+
+      // Check vanity and canonical
+      const mVanity = html.match(/"userVanity":"([^"]+)"/i);
+      if (mVanity && mVanity[1] && !/^\d+$/.test(mVanity[1])) {
+        profileUrl = `https://www.facebook.com/${mVanity[1]}`;
       } else {
-         const mOgUrl = html.match(/<meta[^>]*property=["']og:url["'][^>]*content=["']([^"']+)["']/i);
-         if (mOgUrl && mOgUrl[1]) {
-             const cleanCanonical = this.unescapeHtml(mOgUrl[1]).trim();
-             if (cleanCanonical.includes('facebook.com')) {
-                 profileUrl = normalizeFacebookUrl(cleanCanonical);
-             }
-         }
+        const mCanonical = html.match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']+)["']/i);
+        if (mCanonical && mCanonical[1]) {
+          const cleanCanonical = this.unescapeHtml(mCanonical[1]).trim();
+          if (cleanCanonical.includes('facebook.com')) {
+            profileUrl = normalizeFacebookUrl(cleanCanonical);
+          }
+        }
       }
     } catch (fetchErr: unknown) {
       this.logger.warn(`Fetch HTTP không thành công cho ${profileUrl}: ${(fetchErr as Error)?.message}`);
     }
 
-    // 1. Trích xuất UID thật từ HTML (nếu chưa có uid số từ URL)
+    // 1. Trích xuất UID thật từ HTML
     if (html && (!uid || isNaN(Number(uid)))) {
-      const mAndroid = html.match(/fb:\/\/profile\/(\d+)/i);
-      if (mAndroid) uid = mAndroid[1];
+      const mUserId = html.match(/"userID"\s*:\s*"(\d+)"/i);
+      if (mUserId) uid = mUserId[1];
       if (!uid || isNaN(Number(uid))) {
-        const mEntity = html.match(/"entity_id":"(\d+)"/i);
+        const mEntity = html.match(/"entity_id"\s*:\s*"(\d+)"/i);
         if (mEntity) uid = mEntity[1];
       }
       if (!uid || isNaN(Number(uid))) {
-        const mUser = html.match(/"userID":"(\d+)"/i);
-        if (mUser) uid = mUser[1];
+        const mAndroid = html.match(/fb:\/\/profile\/(\d+)/i) || html.match(/fb:\/\/user\/\?id=(\d+)/i);
+        if (mAndroid) uid = mAndroid[1];
       }
       if (!uid || isNaN(Number(uid))) {
-        const mAuthor = html.match(/"author_id":"(\d+)"/i);
+        const mAuthor = html.match(/"author_id"\s*:\s*"(\d+)"/i);
         if (mAuthor) uid = mAuthor[1];
       }
       if (!uid || isNaN(Number(uid))) {
-        const mActor = html.match(/"actor_id":"(\d+)"/i);
+        const mActor = html.match(/"actor_id"\s*:\s*"(\d+)"/i);
         if (mActor) uid = mActor[1];
       }
     }
 
-    // 2. Trích xuất Tên (Name)
+    // 2. Trích xuất Tên (Name) từ GraphQL Comet hoặc Meta Tags
     let name = '';
     if (html) {
-      const mOgTitle =
-        html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i) ||
-        html.match(/<meta[^>]*name=["']title["'][^>]*content=["']([^"']*)["']/i);
-      if (mOgTitle && mOgTitle[1]) {
-        const candidate = this.cleanProfileName(mOgTitle[1]);
+      // 2a. Thử từ Comet GraphQL User / Page
+      const mGqlName =
+        html.match(/"(?:profile_user|user)"\s*:\s*\{[^}]*?"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i) ||
+        html.match(/\{"__isProfile"\s*:\s*"(?:User|Page)"\s*,\s*"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i) ||
+        html.match(/\{"__typename"\s*:\s*"(?:User|Page)"\s*,\s*"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i) ||
+        html.match(/"XFBProfileEntityConvergenceHeaderRenderer"[^}]*?"name"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i);
+
+      if (mGqlName && mGqlName[1]) {
+        const candidate = this.cleanProfileName(mGqlName[1]);
         if (!this.isInvalidName(candidate)) {
           name = candidate;
         }
       }
 
+      // 2b. Thử từ og:title hoặc meta title
+      if (!name) {
+        const mOgTitle =
+          html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i) ||
+          html.match(/<meta[^>]*name=["']title["'][^>]*content=["']([^"']*)["']/i);
+        if (mOgTitle && mOgTitle[1]) {
+          const candidate = this.cleanProfileName(mOgTitle[1]);
+          if (!this.isInvalidName(candidate)) {
+            name = candidate;
+          }
+        }
+      }
+
+      // 2c. Thử từ thẻ <title>
       if (!name) {
         const mTitle = html.match(/<title>([^<]*)<\/title>/i);
         if (mTitle && mTitle[1]) {
@@ -635,32 +828,61 @@ export class ProfileManagementService implements OnModuleInit {
           }
         }
       }
-    }
 
-    // BẮT BUỘC: Profile Facebook hợp lệ phải có Tên thật và UID số từ Facebook
-    if (!name || this.isInvalidName(name) || !uid) {
-      throw new Error('Trang cá nhân không tồn tại hoặc link không hợp lệ');
-    }
-
-    // 3. Trích xuất Avatar thật (Dùng Lookaside / Graph API / Direct CDN)
-    let avatarUrl = '';
-    let hasAvatar = false;
-    const effectiveSlug = urlSlug || this.extractSlugFromUrl(profileUrl);
-
-    // Thử tải bằng danh sách candidate IDs (urlNumericId trước, sau đó uid)
-    const candidateIds = Array.from(new Set([urlNumericId, uid])).filter(Boolean) as string[];
-    for (const candId of candidateIds) {
-      if (!hasAvatar) {
-        const dest = await this.getAvatarFilePath(candId, effectiveSlug);
-        if (dest) {
-          hasAvatar = true;
-          avatarUrl = `/api/profile-management/avatar/${candId}`;
-          uid = candId;
-          break;
+      // 2d. Fallback theo userVanity hoặc slug nếu tên bị Facebook ẩn
+      if (!name) {
+        const mVanity = html.match(/"userVanity":"([^"]+)"/i);
+        if (mVanity && mVanity[1] && !/^\d+$/.test(mVanity[1])) {
+          name = mVanity[1];
+        } else if (urlSlug && !this.isInvalidName(urlSlug)) {
+          name = urlSlug;
         }
       }
     }
 
+    if (!name || this.isInvalidName(name) || !uid) {
+      throw new Error('Trang cá nhân không tồn tại hoặc link không hợp lệ');
+    }
+
+    // 3. Trích xuất Avatar thật
+    let avatarUrl = '';
+    let hasAvatar = false;
+    const effectiveSlug = urlSlug || this.extractSlugFromUrl(profileUrl);
+
+    // 3a. Thử tải trực tiếp từ URI profile_picture trong GraphQL
+    if (html) {
+      const mGqlAvatar =
+        html.match(/"profile_picture(?:_for_sticky_bar)?"\s*:\s*\{\s*"uri"\s*:\s*"([^"]+)"/i) ||
+        html.match(/"profile_photo"\s*:\s*\{\s*"url"\s*:\s*"([^"]+)"/i);
+      if (mGqlAvatar && mGqlAvatar[1]) {
+        const cleanUri = mGqlAvatar[1].replace(/\\/g, '');
+        if (cleanUri.startsWith('http')) {
+          const ok = await this.downloadAvatar(cleanUri, uid, false);
+          if (ok) {
+            hasAvatar = true;
+            avatarUrl = `/api/profile-management/avatar/${uid}`;
+          }
+        }
+      }
+    }
+
+    // 3b. Fallback candidate IDs (Lookaside & Graph API)
+    if (!hasAvatar) {
+      const candidateIds = Array.from(new Set([urlNumericId, uid])).filter(Boolean) as string[];
+      for (const candId of candidateIds) {
+        if (!hasAvatar) {
+          const dest = await this.getAvatarFilePath(candId, effectiveSlug);
+          if (dest) {
+            hasAvatar = true;
+            avatarUrl = `/api/profile-management/avatar/${candId}`;
+            uid = candId;
+            break;
+          }
+        }
+      }
+    }
+
+    // 3c. Fallback slug
     if (!hasAvatar && effectiveSlug) {
       const dest = await this.getAvatarFilePath(effectiveSlug, effectiveSlug);
       if (dest) {
@@ -669,7 +891,7 @@ export class ProfileManagementService implements OnModuleInit {
       }
     }
 
-    // Fallback: Tìm link CDN trực tiếp trong og:image nếu Lookaside/Graph chưa có
+    // 3d. Fallback og:image
     if (!hasAvatar && html) {
       const mOgImage =
         html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["']/i) ||
@@ -684,7 +906,7 @@ export class ProfileManagementService implements OnModuleInit {
       }
     }
 
-    // 4. Bio (Mô tả) nếu có
+    // 4. Bio (Mô tả)
     let bio: string | undefined = undefined;
     if (html) {
       const mDesc = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["']/i);
@@ -697,7 +919,6 @@ export class ProfileManagementService implements OnModuleInit {
     }
 
     const itemId = 'prof_' + (uid || Date.now()) + '_' + Math.random().toString(36).substring(2, 6);
-
     return {
       id: itemId,
       profileUrl,
@@ -708,6 +929,17 @@ export class ProfileManagementService implements OnModuleInit {
       status: 'SUCCESS',
       crawledAt: new Date().toISOString(),
     };
+  }
+
+  public async crawlSingleProfile(profileUrl: string): Promise<UserProfileItem> {
+    if (isTikTokUrl(profileUrl) || profileUrl.includes('tiktok.com') || profileUrl.trim().startsWith('@')) {
+      return this.crawlSingleTikTokProfile(profileUrl);
+    }
+    return this.crawlSingleFacebookProfile(profileUrl);
+  }
+
+  private async crawlSingleProfileHttp(profileUrl: string): Promise<UserProfileItem> {
+    return this.crawlSingleProfile(profileUrl);
   }
 
   private async executeCrawl(urls: string[]): Promise<void> {
@@ -723,7 +955,7 @@ export class ProfileManagementService implements OnModuleInit {
 
     this.emitLog(`========================================`);
     this.emitLog(
-      `Bắt đầu cào dữ liệu ${total} Profile Facebook (HTTPS Request, ${Math.min(concurrency, total)} luồng song song)`
+      `Bắt đầu cào dữ liệu ${total} Profile Facebook & TikTok (HTTPS Request, ${Math.min(concurrency, total)} luồng song song)`
     );
     this.emitLog(`========================================`);
 
@@ -746,7 +978,7 @@ export class ProfileManagementService implements OnModuleInit {
         this.emitLog(`>>> [Profile ${currentIdx}/${total}] Gửi HTTPS Request: ${profileUrl}`);
 
         try {
-          const profileItem = await this.crawlSingleProfileHttp(profileUrl);
+          const profileItem = await this.crawlSingleProfile(profileUrl);
 
           // Cập nhật hoặc thêm vào danh sách
           const existIdx = this.profiles.findIndex(
@@ -764,7 +996,7 @@ export class ProfileManagementService implements OnModuleInit {
           this.state.profiles = this.profiles;
           this.state.profilesCount = this.profiles.length;
 
-          this.videosGateway.emitProfileMgmtItem(profileItem);
+          this.videosGateway?.emitProfileMgmtItem?.(profileItem);
           successCount++;
 
           this.emitLog(
@@ -950,11 +1182,11 @@ export class ProfileManagementService implements OnModuleInit {
 
     profileUrl = normalizeFacebookUrl(profileUrl);
 
-    // 3. Thử cào thông tin chi tiết (Avatar, Bio, UID chuẩn) nếu là Facebook profile URL
+    // 3. Thử cào thông tin chi tiết (Avatar, Bio, UID chuẩn) cho cả Facebook và TikTok
     let newProfile: UserProfileItem | null = null;
-    if (profileUrl && profileUrl.includes('facebook.com')) {
+    if (profileUrl) {
       try {
-        newProfile = await this.crawlSingleProfileHttp(profileUrl);
+        newProfile = await this.crawlSingleProfile(profileUrl);
       } catch (crawlErr: unknown) {
         this.logger.debug(`Không thể cào trực tiếp profile ${profileUrl}: ${(crawlErr as Error)?.message}`);
       }
@@ -962,10 +1194,11 @@ export class ProfileManagementService implements OnModuleInit {
 
     // Nếu không cào được qua HTTP bot, tạo profile trực tiếp từ dữ liệu hiện có
     if (!newProfile) {
-      const itemId = 'prof_' + (uid || Date.now()) + '_' + Math.random().toString(36).substring(2, 6);
+      const isTT = isTikTokUrl(profileUrl) || profileUrl.includes('tiktok.com');
+      const itemId = (isTT ? 'prof_tt_' : 'prof_') + (uid || Date.now()) + '_' + Math.random().toString(36).substring(2, 6);
       newProfile = {
         id: itemId,
-        profileUrl: normalizeFacebookUrl(profileUrl || `https://www.facebook.com/${uid || Date.now()}`),
+        profileUrl: isTT ? profileUrl : normalizeFacebookUrl(profileUrl || `https://www.facebook.com/${uid || Date.now()}`),
         uid: uid || undefined,
         name: this.cleanProfileName(rawName) || rawName,
         avatarUrl: undefined,
@@ -1004,7 +1237,7 @@ export class ProfileManagementService implements OnModuleInit {
     this.state.profiles = this.profiles;
     this.state.profilesCount = this.profiles.length;
 
-    this.videosGateway.emitProfileMgmtItem(newProfile);
+    this.videosGateway?.emitProfileMgmtItem?.(newProfile);
     this.notifyVideosUpdated();
     this.emitLog(`✔ [TỰ ĐỘNG THÊM PROFILE] Đã tự động thêm người đăng: "${newProfile.name}" (UID: ${newProfile.uid || 'Chưa rõ'}) vào cơ sở dữ liệu.`);
 
@@ -1044,6 +1277,15 @@ export class ProfileManagementService implements OnModuleInit {
           const mLinkUid = link.match(/facebook\.com\/(\d{5,})/i) || link.match(/[?&]id=(\d{5,})/i);
           if (mLinkUid) targetUid = mLinkUid[1];
         }
+        if (!targetUid) {
+          const mTT = targetUrl.match(/tiktok\.com\/@([^/?#]+)/i) || link.match(/tiktok\.com\/@([^/?#]+)/i);
+          if (mTT) targetUid = mTT[1];
+        }
+      }
+
+      if (!targetUrl && link.includes('tiktok.com/@')) {
+        const mTT = link.match(/tiktok\.com\/@([^/?#]+)/i);
+        if (mTT) targetUrl = `https://www.tiktok.com/@${mTT[1]}`;
       }
 
       // 1. Kiểm tra đối chiếu xem UID hoặc tác giả đã có trong profiles chưa
@@ -1103,24 +1345,44 @@ export class ProfileManagementService implements OnModuleInit {
         }
 
         // c. Bù đắp Avatar nếu còn thiếu hoặc file avatar bị lỗi / placeholder (< 1200 bytes)
-        const currentAvatarValid = existingProf.avatarUrl && existingProf.uid && (await this.getAvatarFilePath(existingProf.uid, this.extractSlugFromUrl(existingProf.profileUrl)));
+        const currentAvatarValid =
+          existingProf.avatarUrl &&
+          existingProf.uid &&
+          (await this.getAvatarFilePath(existingProf.uid, this.extractSlugFromUrl(existingProf.profileUrl)));
+
         if (!currentAvatarValid) {
-          const slug = this.extractSlugFromUrl(existingProf.profileUrl);
-          const candidateIds = Array.from(new Set([existingProf.uid, urlId, targetUid, slug])).filter(Boolean) as string[];
-          for (const cand of candidateIds) {
-            const avatarPath = await this.getAvatarFilePath(cand, slug);
-            if (avatarPath) {
-              existingProf.avatarUrl = `/api/profile-management/avatar/${cand}`;
-              existingProf.status = 'SUCCESS';
+          try {
+            const refreshed = await this.crawlSingleProfile(existingProf.profileUrl);
+            if (refreshed.avatarUrl) {
+              existingProf.avatarUrl = refreshed.avatarUrl;
               modified = true;
-              break;
+            }
+            if (refreshed.name && existingProf.name !== refreshed.name && !this.isInvalidName(refreshed.name)) {
+              existingProf.name = refreshed.name;
+              modified = true;
+            }
+            if (refreshed.uid && (!existingProf.uid || isNaN(Number(existingProf.uid)))) {
+              existingProf.uid = refreshed.uid;
+              modified = true;
+            }
+          } catch {
+            const slug = this.extractSlugFromUrl(existingProf.profileUrl);
+            const candidateIds = Array.from(new Set([existingProf.uid, urlId, targetUid, slug])).filter(Boolean) as string[];
+            for (const cand of candidateIds) {
+              const avatarPath = await this.getAvatarFilePath(cand, slug);
+              if (avatarPath) {
+                existingProf.avatarUrl = `/api/profile-management/avatar/${cand}`;
+                existingProf.status = 'SUCCESS';
+                modified = true;
+                break;
+              }
             }
           }
         }
 
         if (modified) {
           this.db.upsertProfile(existingProf);
-          this.videosGateway.emitProfileMgmtItem(existingProf);
+          this.videosGateway?.emitProfileMgmtItem?.(existingProf);
           this.emitLog(`✔ [TỰ ĐỘNG CẬP NHẬT] "${existingProf.name}" | URL: ${existingProf.profileUrl} | Avatar: ${existingProf.avatarUrl ? 'Có' : 'Chưa có'}`);
         }
 

@@ -3,6 +3,7 @@ import { Users, Search, User, Layers } from 'lucide-react';
 import { UserProfileItem } from '../../types/profile-management';
 import { VideoItem } from '../../types/video';
 import { ResizeHandle } from '../ResizeHandle';
+import { FacebookIcon, TikTokIcon } from '../Icons';
 
 export interface ProfileSidebarProps {
   profiles: UserProfileItem[];
@@ -95,9 +96,16 @@ export const ProfileSidebar: React.FC<ProfileSidebarProps> = ({
 
               {/* Thông tin tên & UID */}
               <div className="flex-1 min-w-0">
-                <p className="font-semibold text-xs truncate">{p.name}</p>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <p className="font-semibold text-xs truncate">{p.name}</p>
+                  {!(p.profileUrl?.toLowerCase().includes('tiktok.com') || p.profileUrl?.startsWith('@') || p.uid?.startsWith('@')) ? (
+                    <FacebookIcon className="w-3 h-3 text-blue-500 shrink-0" />
+                  ) : (
+                    <TikTokIcon className="w-3 h-3 text-pink-500 shrink-0" />
+                  )}
+                </div>
                 <p className="text-[10px] text-slate-400 font-mono truncate">
-                  {p.uid ? `UID: ${p.uid}` : p.profileUrl?.replace('https://www.facebook.com/', '')}
+                  {p.uid ? `UID: ${p.uid}` : p.profileUrl?.replace(/^https?:\/\/(www\.)?(facebook\.com|tiktok\.com)\/?/i, '')}
                 </p>
               </div>
 

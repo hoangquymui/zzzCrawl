@@ -74,4 +74,20 @@ export const profileManagementApi = {
     }
     return res.json();
   },
+
+  async updateProfile(
+    id: string,
+    data: { name?: string; profileUrl?: string; uid?: string; platform?: 'facebook' | 'tiktok'; bio?: string }
+  ): Promise<{ success: boolean; item: UserProfileItem }> {
+    const res = await fetch(`${API_BASE}/${id}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || 'Lỗi khi cập nhật profile');
+    }
+    return res.json();
+  },
 };
